@@ -1,0 +1,8 @@
+# Share repeated machine-code sequences on supported AArch64 targets. This
+# preserves Unicode, TLS algorithms, diagnostics and every agent capability.
+[target.'cfg(target_arch = "aarch64")']
+rustflags = [
+  "-C", "llvm-args=-enable-machine-outliner=always",
+  "-C", "llvm-args=-machine-outliner-reruns=3",
+  "-C", "llvm-args=-enable-linkonceodr-outlining",
+]

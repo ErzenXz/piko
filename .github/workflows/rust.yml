@@ -23,6 +23,10 @@ jobs:
           cargo fetch --locked
           python3 -B -m unittest discover -s scripts -p test_licenses.py
           python3 -B scripts/licenses.py --check
+      - name: Verify size experiment and benchmark guards
+        run: |
+          python3 -B -m unittest discover -s scripts -p test_size_evaluation.py
+          python3 -B -m unittest discover -s tests -p test_size_benchmark.py
       - run: cargo clippy --locked --all-targets -- -D warnings
   native:
     name: ${{ matrix.platform }}

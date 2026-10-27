@@ -2,6 +2,7 @@ pub mod agent;
 pub mod agents;
 pub mod auth;
 pub mod browser;
+pub mod cli;
 pub mod computer;
 pub mod config;
 pub mod image;

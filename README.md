@@ -55,6 +55,8 @@ Model inference and browser memory are excluded. Timings and RSS vary by workloa
 [Raw results](https://github.com/ErzenXz/piko/blob/main/docs/benchmarks/macos-arm64-0.7.0.json) ·
 [Before/after results and reproduction](https://github.com/ErzenXz/piko/blob/main/docs/performance.md)
 
+[Unreleased binary-size measurements and TLS tests →](docs/binary-size.md)
+
 ## Built to stay light
 
 One async event-loop thread, shared tool schemas and HTTP connections, lazy MCP and

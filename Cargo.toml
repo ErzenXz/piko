@@ -7,6 +7,12 @@ description = "A tiny, powerful native coding agent"
 license = "MIT"
 repository = "https://github.com/ErzenXz/piko"
 
+[features]
+# Piko has no dependency logger/subscriber. Keep release diagnostics available
+# to Rust embedders with --no-default-features; ACP and returned errors stay on.
+default = ["compact-logging"]
+compact-logging = ["log/release_max_level_off", "tracing/release_max_level_off"]
+
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
@@ -14,6 +20,7 @@ futures-util = "0.3"
 globset = "0.4"
 ignore = "0.4"
 libc = "0.2"
+log = { version = "0.4", default-features = false }
 portable-pty = { version = "0.9", default-features = false }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
@@ -22,7 +29,8 @@ serde_json = { version = "1", features = ["raw_value"] }
 tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util", "fs", "process", "sync", "time", "signal", "net"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"] }
-toml = "0.8"
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+tracing = { version = "0.1", default-features = false }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]

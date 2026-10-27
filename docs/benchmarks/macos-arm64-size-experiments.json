@@ -1,0 +1,119 @@
+{
+  "baselineSourceCommit": "e584e13b56a6f8730a3da7e200fba98726f17e36",
+  "scope": "One-off local macOS arm64 experiments; only the retained candidate is proposed for production. Different-compiler std trial is not an isolated std comparison.",
+  "experiments": [
+    {
+      "sourceCommit": "e584e13b56a6f8730a3da7e200fba98726f17e36",
+      "path": "/tmp/piko-provider.BvY403/piko",
+      "bytes": 3419632,
+      "sha256": "f0340aabea8e928cb71dff2f1128fbedbd09ecbfa0074507e0b8866ab04d08ae",
+      "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "experiment": "baseline",
+      "configurationNotes": "Unchanged e584e13 baseline, stable Rust 1.99.0."
+    },
+    {
+      "backend": "native-tls",
+      "bytes": 2758144,
+      "sha256": "eff4fab931001878d3f35c3e1d05e480f1bcd2907353fe9be52c10b12ba3ad15",
+      "selected": false,
+      "reason": "Native TLS fails TLS-1.3-only handshake; other seven checks pass with fresh short-lived certificates.",
+      "experiment": "native-macos",
+      "tlsTestsPassed": 7,
+      "tlsTestsFailed": 1,
+      "configurationNotes": "Original baseline source; only reqwest Rustls switched to native-tls; native-tls resolved 0.2.18."
+    },
+    {
+      "backend": "rustls",
+      "profile": "z",
+      "bytes": 3403072,
+      "sha256": "665cbeacc48a86b289c2a62e24238c99740097e63319cc5f2fa221bc50870421",
+      "experiment": "trim-z",
+      "configurationNotes": "Baseline source; compact release dependency logging and parse-only TOML 0.8."
+    },
+    {
+      "backend": "rustls",
+      "profile": "s",
+      "bytes": 4053648,
+      "sha256": "322faa6a4e2eb7b69c82a6271c35c8c8128dd6bd66f14326aeb34d8fa75a544d",
+      "selected": false,
+      "experiment": "trim-s",
+      "configurationNotes": "trim-z plus opt-level=s and an emitted link map."
+    },
+    {
+      "backend": "rustls",
+      "profile": "z",
+      "compiler": "nightly-2026-09-21",
+      "buildStd": true,
+      "bytes": 3270944,
+      "sha256": "a720d9f2f17ac8a4765ff0805b7bf8b8704f74eaba2cb2ba00339b2e3f0ee059",
+      "selected": false,
+      "caveat": "Different compiler from stable baseline; not an isolated std-only comparison.",
+      "experiment": "nightly-std",
+      "configurationNotes": "trim-z source, nightly-2026-09-21 compiler and optimized std; not isolated from compiler-version changes."
+    },
+    {
+      "backend": "rustls",
+      "profile": "z",
+      "toml": "1.1.8",
+      "bytes": 3419680,
+      "sha256": "9bf5e734193ef6a47be18fd3e799979e47dc89309f34ef5e6017b92b14a8c8db",
+      "selected": false,
+      "experiment": "toml-new",
+      "configurationNotes": "compact logging plus TOML 1.1.8 parse/serde/std; original source dispatch."
+    },
+    {
+      "backend": "rustls",
+      "profile": "z",
+      "boxedHandler": true,
+      "bytes": 3352720,
+      "sha256": "6cb0acef6550337905ed281321079b0d48170414222aeab63cf49ff39235d000",
+      "experiment": "boxed",
+      "configurationNotes": "trim-z plus boxed Server::handle async dispatch."
+    },
+    {
+      "backend": "rustls",
+      "profile": "z",
+      "sharedJsonWriter": true,
+      "boxedMcp": true,
+      "bytes": 3352704,
+      "sha256": "6672b628b0a9a6c4f22940455230ebe612f6132062e28cf2ce567a2acd047a78",
+      "selected": false,
+      "experiment": "shared-json",
+      "configurationNotes": "boxed plus boxed MCP dispatch and shared dynamic output writers."
+    },
+    {
+      "backend": "rustls",
+      "profile": "z",
+      "forcedOutliner": true,
+      "bytes": 3305680,
+      "sha256": "7727e863a5171c55fac4041d5b0ad203f269b3062edefe4d68ada0890af3fff0",
+      "experiment": "outliner",
+      "configurationNotes": "shared-json plus forced outliner, three reruns and linkonce-ODR eligibility."
+    },
+    {
+      "bytes": 3323248,
+      "sha256": "8588d6631760e7057204cedcab28a10bb62d2a3762d0263bfd3046ad418e4bc9",
+      "selected": false,
+      "flags": "inline=0,hint=0,outliner=always,reruns=3",
+      "experiment": "inline-zero",
+      "configurationNotes": "outliner plus inline/inline-hint thresholds zero."
+    },
+    {
+      "profile": "z",
+      "entryPointInLibrary": true,
+      "bytes": 3352528,
+      "sha256": "f6f89093cab6db5e276a9b2a1b27e352e54db410ea4720683e58b6efe5c5a30c",
+      "experiment": "single-crate",
+      "configurationNotes": "trim-z plus entry point in library; no boxing/dynamic writers/extra compiler flags."
+    },
+    {
+      "profile": "z",
+      "lto": "thin",
+      "bytes": 4916544,
+      "sha256": "ca41331105aa790821cab03b308e495fd60bb17e9a25f203d4ef0c1c5e6cd269",
+      "selected": false,
+      "experiment": "thin",
+      "configurationNotes": "boxed dispatcher plus thin LTO, no shared JSON or extra compiler flags."
+    }
+  ]
+}
