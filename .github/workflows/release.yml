@@ -3,16 +3,30 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      phase:
+        description: Stage a new release, or finalize the approved staged artifacts
+        type: choice
+        options: [stage, finalize]
+        default: stage
+      staged_run_id:
+        description: Successful staging run ID, required for finalization
+        type: string
+        default: ''
 permissions:
   contents: read
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.phase || 'stage' }}
+  cancel-in-progress: false
 jobs:
   verify:
+    if: inputs.phase != 'finalize'
     uses: ./.github/workflows/rust.yml
-  publish:
+  stage:
     needs: verify
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -22,19 +36,84 @@ jobs:
           registry-url: https://registry.npmjs.org
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          version: 12.14.0
+          version: 12.15.0
           run_install: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: ${{ runner.temp }}/artifacts
           merge-multiple: true
       - name: Check tag and package versions
-        env:
-          RELEASE_REF: ${{ github.ref_name }}
         run: node scripts/release.cjs validate "$RUNNER_TEMP/artifacts"
-      - name: Publish native packages, then launcher (OIDC)
-        run: node scripts/release.cjs publish "$RUNNER_TEMP/artifacts"
-      - name: Publish checksummed native downloads
+      - name: Stage all seven packages with provenance for maintainer approval
+        run: node scripts/release.cjs stage "$RUNNER_TEMP/artifacts"
+      - name: Preserve exact staged payloads and approval receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: staged-release
+          path: ${{ runner.temp }}/artifacts/*
+          if-no-files-found: error
+          retention-days: 30
+  finalize:
+    if: github.event_name == 'workflow_dispatch' && inputs.phase == 'finalize'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Validate staging run identity
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/release.cjs github "$RUNNER_TEMP/artifacts"
+          STAGED_RUN_ID: ${{ inputs.staged_run_id }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, re, subprocess
+          run_id = os.environ['STAGED_RUN_ID']
+          if not re.fullmatch(r'[1-9][0-9]*', run_id):
+              raise SystemExit('A valid staging run ID is required')
+          run = json.loads(subprocess.check_output(['gh', 'api', f'repos/ErzenXz/piko/actions/runs/{run_id}']))
+          expected = {'head_sha': os.environ['GITHUB_SHA'], 'head_branch': os.environ['GITHUB_REF_NAME'],
+                      'path': '.github/workflows/release.yml', 'status': 'completed', 'conclusion': 'success'}
+          for key, value in expected.items():
+              if run.get(key) != value:
+                  raise SystemExit(f'Staging run {key} does not match this successful tagged release')
+          PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: staged-release
+          path: ${{ runner.temp }}/artifacts
+          run-id: ${{ inputs.staged_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify approval and provenance before publishing GitHub downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release.cjs finalize "$RUNNER_TEMP/artifacts"
+      - name: Independently verify every public release payload and approval
+        run: python3 -B scripts/verify-release.py --version "${GITHUB_REF_NAME#v}" --require-approval --source-commit "$GITHUB_SHA" --out "$RUNNER_TEMP/release-verification.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: public-release-verification
+          path: ${{ runner.temp }}/release-verification.json
+          if-no-files-found: error
+  install:
+    needs: finalize
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 12.15.0
+          run_install: false
+      - name: Install public latest with no trust exclusions or install scripts
+        run: pnpm test:published

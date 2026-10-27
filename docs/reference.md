@@ -531,6 +531,8 @@ See [execution and recovery design](design.md).
 
 ## Development
 
+Maintainers: see [the staged release and approval procedure](releases.md).
+
 ```sh
 cargo fmt --all -- --check
 cargo check --locked --all-targets

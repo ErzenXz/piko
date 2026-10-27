@@ -1,3 +1,9 @@
+# 0.7.1
+
+- Restore ordinary installation under pnpm’s no-downgrade trust policy by staging all seven packages with provenance and requiring maintainer approval before release.
+- Preserve exact staged artifacts for finalization without rebuilding, reject missing approval or mismatched release provenance, and test public-registry installs with trust checks enabled.
+- Update release tooling to pnpm 12.15.0. Agent runtime behavior and dependencies are unchanged.
+
 # 0.7.0
 
 - Add native macOS and Windows computer use through system capture, JPEG and input APIs, with no new dependencies, helpers, browser downloads or clipboard changes.

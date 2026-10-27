@@ -1,11 +1,13 @@
 {
   "name": "piko-development",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
-  "packageManager": "pnpm@12.14.0",
+  "packageManager": "pnpm@12.15.0",
   "scripts": {
     "test:package": "node --test tests/npm.test.cjs",
     "stage:package": "node scripts/package.cjs",
-    "test:install": "node scripts/package-smoke.cjs"
+    "test:install": "node scripts/package-smoke.cjs",
+    "test:release": "node --test tests/release.test.cjs",
+    "test:published": "node scripts/verify-install.cjs"
   }
 }

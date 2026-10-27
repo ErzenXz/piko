@@ -23,6 +23,8 @@ REPO = Path(__file__).resolve().parent.parent
 PLATFORMS = ("darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-arm64", "win32-x64")
 HOSTS = frozenset(("registry.npmjs.org", "api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"))
 MAX_ASSET = 40 * 1024 * 1024
+SLSA_V1 = "https://slsa.dev/provenance/v1"
+REPOSITORY = "https://github.com/ErzenXz/piko"
 
 
 def safe_url(url, hosts=HOSTS):
@@ -131,7 +133,77 @@ def check(condition, message):
         raise ValueError(message)
 
 
-def verify(version, timeout):
+def approval_provenance(manifest, name, version, tarball_sha512, reader, source_commit=None):
+    """Validate public registry metadata and DSSE claims, not Sigstore signatures.
+
+    HTTPS registry transport is the trust boundary here. Signature, certificate,
+    transparency-log and identity verification require a separate Sigstore verifier.
+    """
+    user = manifest.get("_npmUser")
+    check(isinstance(user, dict), "Missing npm publishing identity: " + name)
+    approver = user.get("approver")
+    check(isinstance(approver, dict) and isinstance(approver.get("name"), str)
+          and bool(approver["name"].strip()), "Missing npm staged approver: " + name)
+    publisher = user.get("trustedPublisher")
+    check(isinstance(publisher, dict) and publisher.get("id") == "github"
+          and isinstance(publisher.get("oidcConfigId"), str) and bool(publisher["oidcConfigId"].strip()),
+          "Missing GitHub trusted publisher configuration: " + name)
+    distribution = manifest.get("dist")
+    check(isinstance(distribution, dict), "Invalid registry distribution metadata: " + name)
+    attestations = distribution.get("attestations")
+    check(isinstance(attestations, dict) and isinstance(attestations.get("provenance"), dict)
+          and attestations["provenance"].get("predicateType") == SLSA_V1,
+          "Missing SLSA v1 provenance metadata: " + name)
+    url = safe_url(attestations.get("url", ""), frozenset(("registry.npmjs.org",)))
+    parsed = urllib.parse.urlsplit(url)
+    check(not parsed.query and urllib.parse.unquote(parsed.path) == "/-/npm/v1/attestations/" + name + "@" + version,
+          "Attestation URL does not bind package/version: " + name)
+    document = reader.json(url)
+    records = document.get("attestations") if isinstance(document, dict) else None
+    check(isinstance(records, list) and 0 < len(records) <= 20, "Invalid attestation bundle collection: " + name)
+    records = [record for record in records if isinstance(record, dict) and record.get("predicateType") == SLSA_V1]
+    check(len(records) == 1, "Expected one SLSA v1 provenance bundle: " + name)
+    bundle = records[0].get("bundle")
+    envelope = bundle.get("dsseEnvelope") if isinstance(bundle, dict) else None
+    check(isinstance(envelope, dict) and envelope.get("payloadType") == "application/vnd.in-toto+json",
+          "Invalid provenance DSSE envelope: " + name)
+    payload = envelope.get("payload")
+    check(isinstance(payload, str) and len(payload) <= 3 * 1024 * 1024, "Invalid provenance payload: " + name)
+    statement = json.loads(base64.b64decode(payload, validate=True))
+    check(isinstance(statement, dict) and statement.get("_type") == "https://in-toto.io/Statement/v1"
+          and statement.get("predicateType") == SLSA_V1, "Invalid SLSA v1 statement: " + name)
+    subjects = statement.get("subject")
+    check(isinstance(subjects, list) and len(subjects) <= 20, "Invalid provenance subjects: " + name)
+    subjects = [subject for subject in subjects if isinstance(subject, dict)
+                and isinstance(subject.get("name"), str)
+                and urllib.parse.unquote(subject["name"]) == "pkg:npm/" + name + "@" + version]
+    check(len(subjects) == 1 and isinstance(subjects[0].get("digest"), dict)
+          and subjects[0]["digest"].get("sha512") == tarball_sha512,
+          "Provenance subject SHA-512/package identity mismatch: " + name)
+    predicate = statement.get("predicate")
+    definition = predicate.get("buildDefinition") if isinstance(predicate, dict) else None
+    check(isinstance(definition, dict), "Missing provenance build definition: " + name)
+    external = definition.get("externalParameters")
+    workflow = external.get("workflow") if isinstance(external, dict) else None
+    check(isinstance(workflow, dict) and workflow.get("repository") == REPOSITORY
+          and workflow.get("path") == ".github/workflows/release.yml" and workflow.get("ref") == "refs/tags/v" + version,
+          "Provenance release workflow/repository/ref mismatch: " + name)
+    dependencies = definition.get("resolvedDependencies")
+    check(isinstance(dependencies, list) and len(dependencies) <= 100, "Invalid provenance source dependencies: " + name)
+    sources = [dependency for dependency in dependencies if isinstance(dependency, dict)
+               and dependency.get("uri") == "git+" + REPOSITORY + "@refs/tags/v" + version]
+    check(len(sources) == 1 and isinstance(sources[0].get("digest"), dict), "Missing bound release source dependency: " + name)
+    commit = sources[0]["digest"].get("gitCommit")
+    check(isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit) is not None,
+          "Invalid provenance source commit: " + name)
+    check(source_commit is None or commit == source_commit, "Provenance source commit mismatch: " + name)
+    return {"approver": approver["name"], "trustedPublisher": {"id": "github", "oidcConfigId": publisher["oidcConfigId"]},
+            "provenance": {"predicateType": SLSA_V1, "url": url, "sourceCommit": commit,
+                           "workflow": workflow, "subjectSha512": tarball_sha512,
+                           "validation": "Registry metadata and decoded DSSE claims; no cryptographic Sigstore verification"}}
+
+
+def verify(version, timeout, require_approval=False, source_commit=None):
     reader = Reader(timeout)
     with tempfile.TemporaryDirectory(prefix="piko-public-verification-") as directory:
         work = Path(directory)
@@ -145,6 +217,7 @@ def verify(version, timeout):
         (work / "npm/cli/package.json").write_text(json.dumps(cli))
         npm = {}
         paths = {}
+        release_source = source_commit
         for platform in (*PLATFORMS, "cli"):
             name = "@erzenx/piko" + ("" if platform == "cli" else "-" + platform)
             manifest = reader.json("https://registry.npmjs.org/" + urllib.parse.quote(name, safe="") + "/" + urllib.parse.quote(version, safe=""))
@@ -171,6 +244,9 @@ def verify(version, timeout):
             attestations = dist.get("attestations")
             if isinstance(attestations, dict):
                 entry["attestations"] = attestations
+            if require_approval:
+                entry["approval"] = approval_provenance(manifest, name, version, digest(path, "sha512").hex(), reader, release_source)
+                release_source = entry["approval"]["provenance"]["sourceCommit"]
             npm[platform] = entry
             paths[file_name] = path
             print("Verified public npm " + name + "@" + version, file=sys.stderr, flush=True)
@@ -215,10 +291,15 @@ def verify(version, timeout):
         for platform, name in archive_names.items():
             verify_script("verify-archive.py", (public_paths[name], paths[f"native-{platform}.tgz"], platform), work)
         return {"version": version, "verifiedAt": datetime.now(timezone.utc).isoformat(), "npm": npm,
+                "approvalPolicy": {"required": require_approval, "sourceCommit": release_source,
+                    "validation": "Public registry metadata and DSSE claims, not cryptographic Sigstore verification"},
                 "github": {"url": release.get("html_url"), "tag": tag, "publishedAt": release.get("published_at"),
                            "assets": {name: {"bytes": assets[name]["size"], "sha256": digest(path).hex()} for name, path in sorted(public_paths.items())}},
                 "checks": {"npmSha512": 7, "packageAllowlists": 7, "releaseAssets": 14,
-                           "checksummedPayloads": 13, "registryGithubTarballParity": 7, "standaloneNativeParity": 6}}
+                           "checksummedPayloads": 13, "registryGithubTarballParity": 7, "standaloneNativeParity": 6,
+                           "stagedApprovals": 7 if require_approval else 0,
+                           "githubTrustedPublishers": 7 if require_approval else 0,
+                           "slsaV1ClaimBindings": 7 if require_approval else 0}}
 
 
 def main():
@@ -226,12 +307,16 @@ def main():
     parser.add_argument("--version", required=True)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--timeout", type=int, default=1200, help="Global visibility deadline, 1–1200 seconds (default: 1200)")
+    parser.add_argument("--require-approval", action="store_true", help="Require staged approvers and bound GitHub/SLSA v1 metadata for all seven packages")
+    parser.add_argument("--source-commit", help="Expected 40-character release Git commit (requires --require-approval)")
     arguments = parser.parse_args()
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", arguments.version):
         parser.error("Invalid semantic release version")
     if not 1 <= arguments.timeout <= 1200:
         parser.error("--timeout must be between 1 and 1200 seconds")
-    report = verify(arguments.version, arguments.timeout)
+    if arguments.source_commit and (not arguments.require_approval or not re.fullmatch(r"[0-9a-f]{40}", arguments.source_commit)):
+        parser.error("--source-commit requires --require-approval and a lowercase 40-character Git commit")
+    report = verify(arguments.version, arguments.timeout, arguments.require_approval, arguments.source_commit)
     arguments.out.parent.mkdir(parents=True, exist_ok=True)
     # Never leave a success-looking partial report after an interrupted write.
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix=".piko-verification-", dir=arguments.out.parent, delete=False) as output:

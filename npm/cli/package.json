@@ -1,6 +1,6 @@
 {
   "name": "@erzenx/piko",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "A tiny, powerful native coding agent: ACP, streaming, subagents, MCP and ChatGPT sign-in",
   "license": "MIT",
   "repository": {
@@ -36,11 +36,11 @@
     "registry": "https://registry.npmjs.org/"
   },
   "optionalDependencies": {
-    "@erzenx/piko-darwin-arm64": "0.7.0",
-    "@erzenx/piko-darwin-x64": "0.7.0",
-    "@erzenx/piko-linux-arm64": "0.7.0",
-    "@erzenx/piko-linux-x64": "0.7.0",
-    "@erzenx/piko-win32-arm64": "0.7.0",
-    "@erzenx/piko-win32-x64": "0.7.0"
+    "@erzenx/piko-darwin-arm64": "0.7.1",
+    "@erzenx/piko-darwin-x64": "0.7.1",
+    "@erzenx/piko-linux-arm64": "0.7.1",
+    "@erzenx/piko-linux-x64": "0.7.1",
+    "@erzenx/piko-win32-arm64": "0.7.1",
+    "@erzenx/piko-win32-x64": "0.7.1"
   }
 }
