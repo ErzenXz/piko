@@ -1,20 +1,55 @@
 use crate::{auth::Auth, config::Config, metrics::Metrics, protocol::Peer};
 use anyhow::{Context, Result, bail, ensure};
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Serialize, ser::SerializeSeq};
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 const MAX_EVENT: usize = 4 * 1024 * 1024;
+
+/// One wire array over borrowed saved exchanges and an owned active turn.
+#[derive(Clone, Copy)]
+pub struct Input<'a> {
+    pub prefix: &'a [Cow<'a, Value>],
+    pub active: &'a [Value],
+}
+
+impl<'a> Input<'a> {
+    pub fn plain(active: &'a [Value]) -> Self {
+        Self {
+            prefix: &[],
+            active,
+        }
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &Value> {
+        self.prefix
+            .iter()
+            .map(Cow::as_ref)
+            .chain(self.active.iter())
+    }
+}
+
+impl Serialize for Input<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.prefix.len() + self.active.len()))?;
+        for item in self.iter() {
+            seq.serialize_element(item)?;
+        }
+        seq.end()
+    }
+}
 
 // Borrow conversation values until serialization; retries share the encoded body bytes.
 #[derive(Serialize)]
 struct ResponsesRequest<'a> {
     model: &'a str,
     instructions: &'a str,
-    input: &'a [Value],
+    input: Input<'a>,
     tools: &'a serde_json::value::RawValue,
     stream: bool,
     store: bool,
@@ -56,7 +91,7 @@ fn retry_delay(header: Option<&reqwest::header::HeaderValue>, attempt: u32) -> R
 #[derive(Clone)]
 pub struct Provider {
     client: reqwest::Client,
-    config: Config,
+    config: Arc<Config>,
     auth: Auth,
     catalog: Arc<crate::models::Catalog>,
     requests: Arc<Semaphore>,
@@ -94,7 +129,7 @@ impl Provider {
                 .redirect(reqwest::redirect::Policy::none())
                 .pool_max_idle_per_host(config.max_model_requests.min(256))
                 .build()?,
-            config: config.clone(),
+            config: Arc::new(config.clone()),
             auth: Auth::new(config),
             catalog: Arc::new(crate::models::Catalog::default()),
             requests: Arc::new(Semaphore::new(config.max_model_requests)),
@@ -108,7 +143,7 @@ impl Provider {
         model: &str,
         reasoning_effort: Option<&str>,
         instructions: &str,
-        input: &[Value],
+        input: Input<'_>,
         tools: &[Value],
         encoded_tools: Option<&serde_json::value::RawValue>,
         peer: &Peer,
@@ -136,7 +171,7 @@ impl Provider {
         model: &str,
         reasoning_effort: Option<&str>,
         instructions: &str,
-        input: &[Value],
+        input: Input<'_>,
         tools: &[Value],
         encoded_tools: Option<&serde_json::value::RawValue>,
         peer: &Peer,
@@ -166,7 +201,7 @@ impl Provider {
             }
         };
         let body = if chat {
-            let mut body = chat_request(
+            let mut body = chat_request_view(
                 model,
                 instructions,
                 input,
@@ -429,9 +464,19 @@ pub fn chat_request(
     tools: &[Value],
     max_tokens: u32,
 ) -> Result<Value> {
+    chat_request_view(model, instructions, Input::plain(input), tools, max_tokens)
+}
+
+fn chat_request_view(
+    model: &str,
+    instructions: &str,
+    input: Input<'_>,
+    tools: &[Value],
+    max_tokens: u32,
+) -> Result<Value> {
     let mut messages = vec![json!({"role":"system", "content":instructions})];
     let mut images = Vec::new();
-    for item in input {
+    for item in input.iter() {
         if (item["type"] == "function_call" || item["role"].is_string()) && !images.is_empty() {
             messages.push(json!({"role":"user","content":std::mem::take(&mut images)}));
         }
@@ -720,7 +765,7 @@ mod tests {
         let mut request = ResponsesRequest {
             model: "model",
             instructions: "instructions",
-            input: &input,
+            input: Input::plain(&input),
             tools: &encoded,
             stream: true,
             store: false,
@@ -732,7 +777,7 @@ mod tests {
             prompt_cache_key: Some("harness-v1:session"),
             prompt_cache_retention: Some("24h"),
         };
-        assert!(std::ptr::eq(request.input.as_ptr(), input.as_ptr()));
+        assert!(std::ptr::eq(request.input.active.as_ptr(), input.as_ptr()));
         assert!(std::ptr::eq(request.tools, encoded.as_ref()));
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["input"], json!(input));
@@ -834,7 +879,7 @@ mod tests {
                 "model",
                 None,
                 "instructions",
-                &[],
+                Input::plain(&[]),
                 &[],
                 None,
                 &peer,

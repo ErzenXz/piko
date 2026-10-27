@@ -1,10 +1,11 @@
 """Durability and retry regressions using only local ACP/HTTP fixtures."""
 import asyncio
 import json
+import os
 import time
 import unittest
 
-from stdio import Harness, call, final, response
+from stdio import Harness, call, final, response, MODEL_CATALOG
 
 
 STREAM_ERROR = 'data: {"type":"response.failed","response":{"error":{"message":"fixture failure"}}}\n\n'
@@ -65,6 +66,117 @@ class ScriptedHarness(Harness):
 
 
 class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_global_process_budget_is_shared_between_acp_sessions_and_reusable(self):
+        async def model(body):
+            last = body["input"][-1]
+            if last.get("type") == "function_call_output":
+                return final()
+            hold = last.get("content", "").strip() == "hold process"
+            command = ("ping -n 30 127.0.0.1 >nul" if os.name == "nt" else "sleep 30") if hold else "echo reusable"
+            return response([call("shell", {"command": command, "background": hold, "timeout_secs": 60}, "process")])
+
+        async with Harness(model, extra="max_processes = 1\n") as h:
+            await h.initialize()
+            first, second = await h.session(), await h.session()
+            self.assertEqual((await h.prompt(first, "hold process"))["result"]["stopReason"], "end_turn")
+            stats = (await h.rpc("_harness/stats", {}))["result"]["runtime"]
+            self.assertEqual(stats["toolProcesses"], 1)
+            self.assertEqual(stats["toolProcessLimit"], 1)
+            self.assertEqual((await h.prompt(second, "blocked"))["result"]["stopReason"], "end_turn")
+            output = json.loads(h.requests[-1]["input"][-1]["output"])
+            self.assertIn("process", output["error"].lower())
+            self.assertEqual((await h.rpc("_harness/tasks", {"sessionId": second}))["result"]["tasks"], [])
+            task = (await h.rpc("_harness/tasks", {"sessionId": first}))["result"]["tasks"][0]
+            await h.rpc("_harness/task/cancel", {"sessionId": first, "taskId": task["task_id"]})
+            for _ in range(250):
+                if (await h.rpc("_harness/stats", {}))["result"]["runtime"]["toolProcesses"] == 0:
+                    break
+                await asyncio.sleep(.02)
+            else:
+                self.fail("Cancelled process did not release its global slot")
+            self.assertEqual((await h.prompt(second, "retry"))["result"]["stopReason"], "end_turn")
+            output = json.loads(h.requests[-1]["input"][-1]["output"])
+            self.assertEqual(output["status"], "completed")
+            self.assertIn("reusable", output["output"])
+
+    async def test_cold_history_survives_picker_changes_failed_preparation_and_reload(self):
+        async def model(body):
+            return final("recorded")
+
+        async with Harness(model, extra="resident_history_bytes = 0\n", catalog=MODEL_CATALOG) as h:
+            await h.initialize()
+            session = await h.session()
+            self.assertEqual((await h.prompt(session, "first durable turn"))["result"]["stopReason"], "end_turn")
+            saved = h.root / "state" / "sessions" / f"{session}.json"
+            before = saved.read_bytes()
+            # Invalid guidance fails preparation after history was hydrated.
+            (h.workspace / "AGENTS.md").write_bytes(b"invalid\x00guidance")
+            failed = await h.prompt(session, "must not lose history")
+            self.assertIn("error", failed)
+            self.assertEqual(saved.read_bytes(), before)
+            (h.workspace / "AGENTS.md").unlink()
+            for method, params in [
+                ("session/set_model", {"modelId": "fixture-basic"}),
+                ("session/set_mode", {"modeId": "plan"}),
+                ("session/set_config_option", {"configId": "reasoning_effort", "value": "medium"}),
+            ]:
+                result = await h.rpc(method, {"sessionId": session, **params})
+                self.assertNotIn("error", result)
+                self.assertEqual(len(json.loads(saved.read_text())["turns"]), 1)
+            self.assertEqual((await h.prompt(session, "second durable turn"))["result"]["stopReason"], "end_turn")
+            self.assertEqual([item["content"].strip() for item in h.requests[-1]["input"] if item.get("role") == "user"],
+                             ["first durable turn", "second durable turn"])
+            self.assertEqual(h.requests[-1]["model"], "fixture-basic")
+            self.assertEqual(h.requests[-1]["reasoning"]["effort"], "medium")
+            await h.rpc("_harness/session/unload", {"sessionId": session})
+            loaded = await h.rpc("session/load", {"sessionId": session, "cwd": str(h.workspace), "mcpServers": []})
+            self.assertEqual(loaded["result"]["modes"]["currentModeId"], "plan")
+            self.assertEqual((await h.prompt(session, "third durable turn"))["result"]["stopReason"], "end_turn")
+            self.assertEqual(len(json.loads(saved.read_text())["turns"]), 3)
+
+    async def test_turn_admission_cancel_and_prompt_byte_overload_remain_responsive(self):
+        release = asyncio.Event()
+        async def model(body):
+            await release.wait()
+            return final()
+
+        extra = ("max_active_turns = 1\nmax_model_requests = 8\n"
+                 "max_pending_prompt_bytes = 1048576\ncontext_bytes = 1048576\n")
+        async with Harness(model, extra=extra) as h:
+            await h.initialize()
+            sessions = [await h.session() for _ in range(4)]
+            running = asyncio.create_task(h.prompt(sessions[0], "x" * (400 * 1024)))
+            await asyncio.wait_for(h.seen.wait(), 3)
+            queued = asyncio.create_task(h.prompt(sessions[1], "y" * (400 * 1024)))
+            await asyncio.sleep(.05)
+            rejected = await h.prompt(sessions[2], "z" * (400 * 1024))
+            self.assertIn("Pending prompt byte budget", rejected["error"]["message"])
+            self.assertEqual(len(h.requests), 1)
+            await h.rpc("session/cancel", {"sessionId": sessions[1]})
+            self.assertEqual((await asyncio.wait_for(queued, 2))["result"]["stopReason"], "cancelled")
+            release.set()
+            self.assertEqual((await running)["result"]["stopReason"], "end_turn")
+            # Both admission permits and the byte budget are reusable.
+            self.assertEqual((await h.prompt(sessions[1], "reused"))["result"]["stopReason"], "end_turn")
+            self.assertEqual((await h.prompt(sessions[2], "retried"))["result"]["stopReason"], "end_turn")
+            self.assertEqual(len(h.requests), 3)
+
+    async def test_single_root_slot_can_wait_for_nested_subagents(self):
+        async def model(body):
+            prompt = body["input"][0].get("content", "").strip()
+            done = any(item.get("type") == "function_call_output" for item in body["input"])
+            if done or prompt == "grandchild":
+                return final("complete")
+            target = "grandchild" if prompt == "child" else "child"
+            return response([call("spawn_agent", {"prompt": target, "role": "explore", "background": False})])
+
+        async with Harness(model, extra="max_active_turns = 1\nmax_model_requests = 1\n") as h:
+            await h.initialize()
+            result = await asyncio.wait_for(h.prompt(await h.session(), "root"), 5)
+            self.assertEqual(result["result"]["stopReason"], "end_turn")
+            self.assertEqual(len(h.requests), 5)
+            self.assertEqual(h.peak_active, 1)
+
     async def test_tool_results_are_checkpointed_before_next_provider_request(self):
         prior = "prior-history:" + "x" * 4200
 

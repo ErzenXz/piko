@@ -1,0 +1,18 @@
+# 1,000 logical sessions/children in one native process. Models run remotely;
+# this does not run 1,000 local model instances or bundle a browser per agent.
+# Start with: piko --acp --config /absolute/path/laptop-swarm.toml
+max_sessions = 1024
+max_subagents = 1024
+max_jobs = 1024
+max_processes = 8
+max_active_turns = 16
+max_model_requests = 16
+max_pending_prompt_bytes = 67108864
+max_searches = 2
+max_mcp_connections = 8
+context_bytes = 98304
+resident_history_bytes = 0
+retained_agent_context_bytes = 262144
+tool_output_bytes = 8192
+max_output_tokens = 4096
+request_timeout_secs = 600

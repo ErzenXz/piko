@@ -43,6 +43,7 @@ fn config_rejects_insecure_urls_and_invalid_limits() {
         include_str!("../examples/ollama.toml"),
         include_str!("../examples/openrouter.toml"),
         include_str!("../examples/computer.toml"),
+        include_str!("../examples/laptop-swarm.toml"),
     ] {
         toml::from_str::<Config>(example)
             .unwrap()
@@ -335,7 +336,7 @@ async fn context_projection_can_omit_every_turn_without_deleting_history_and_har
     let workspace = Workspace::new(dir.path()).await.unwrap();
     let mut session = Session::new(&workspace, &Config::default());
     session.turns.push_back(Turn {
-        items: vec![json!({"role":"user","content":"x".repeat(20000)})],
+        items: vec![json!({"role":"user","content":"x".repeat(20000)})].into(),
     });
     assert!(session.context(100).is_empty());
     assert_eq!(session.dropped_turns, 0);
@@ -425,7 +426,8 @@ async fn persistence_is_atomic_workspace_scoped_and_private() {
     let mut session = Session::new(&workspace, &config);
     for index in 0..4 {
         session.turns.push_back(Turn {
-            items: vec![json!({"role":"user","content":format!("turn-{index}-{}","x".repeat(50))})],
+            items: vec![json!({"role":"user","content":format!("turn-{index}-{}","x".repeat(50))})]
+                .into(),
         });
     }
     let two_turn_budget = session.bytes() / 2;

@@ -5,6 +5,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
+    borrow::Cow,
     future::Future,
     pin::Pin,
     sync::{Arc, OnceLock},
@@ -68,9 +69,11 @@ pub fn run_agent<'a>(
     items: &'a mut Vec<Value>,
 ) -> Pin<Box<dyn Future<Output = Result<AgentResult>> + Send + 'a>> {
     Box::pin(async move {
+        let mut prefix = [];
         run_with_instructions(
             ctx,
             items,
+            &mut prefix,
             instructions(ctx).await?,
             prepare(ctx).await?,
             None,
@@ -184,9 +187,10 @@ pub struct Checkpoint<'a> {
     pub base_bytes: usize,
 }
 
-pub fn run_with_instructions<'a>(
+pub fn run_with_instructions<'a, 'history: 'a>(
     ctx: &'a AgentContext,
     items: &'a mut Vec<Value>,
+    prefix: &'a mut [Cow<'history, Value>],
     instructions: String,
     toolset: Toolset,
     checkpoint: Option<Checkpoint<'a>>,
@@ -196,6 +200,7 @@ pub fn run_with_instructions<'a>(
         let definitions = &schemas.definitions;
         let encoded = &schemas.encoded;
         let definition_bytes = encoded.get().len();
+        let mut prefix_bytes = crate::session::json_bytes(prefix)?;
         let mut last_text = String::new();
         for step in 0..ctx.config.max_turn_steps {
             if ctx.cancel.is_cancelled() {
@@ -205,7 +210,18 @@ pub fn run_with_instructions<'a>(
                 });
             }
             items.extend(ctx.mailboxes.drain(ctx.agent_id.as_deref()).await);
-            let bytes = crate::session::json_bytes(items)?;
+            let input = crate::provider::Input {
+                prefix,
+                active: items,
+            };
+            let active_bytes = crate::session::json_bytes(items)?;
+            let bytes = if prefix.is_empty() {
+                active_bytes
+            } else if items.is_empty() {
+                prefix_bytes
+            } else {
+                prefix_bytes + active_bytes - 1
+            };
             ensure!(
                 bytes + instructions.len() + definition_bytes <= ctx.config.context_bytes,
                 "Active context budget exhausted; start a new session or increase context_bytes"
@@ -213,7 +229,7 @@ pub fn run_with_instructions<'a>(
             let response = tokio::select! {
                 biased;
                 _ = ctx.cancel.cancelled() => return Ok(AgentResult {text:last_text,stop_reason:"cancelled"}),
-                response = ctx.provider.respond(&ctx.model,ctx.reasoning_effort.as_deref(),&instructions,items,definitions,Some(encoded),&ctx.peer,&ctx.session_id,ctx.agent_id.as_deref(),&ctx.cancel) => response?,
+                response = ctx.provider.respond(&ctx.model,ctx.reasoning_effort.as_deref(),&instructions,input,definitions,Some(encoded),&ctx.peer,&ctx.session_id,ctx.agent_id.as_deref(),&ctx.cancel) => response?,
             };
             last_text = response.text;
             if response.incomplete {
@@ -226,10 +242,12 @@ pub fn run_with_instructions<'a>(
             let calls: Vec<_> = response
                 .output
                 .iter()
-                .filter(|v| v["type"] == "function_call")
-                .cloned()
+                .enumerate()
+                .filter_map(|(index, value)| (value["type"] == "function_call").then_some(index))
                 .collect();
-            validate_calls(&calls)?;
+            validate_calls(calls.iter().map(|index| &response.output[*index]))?;
+            let base = items.len();
+            let calls: Vec<_> = calls.into_iter().map(|index| base + index).collect();
             items.extend(response.output);
             if calls.is_empty() {
                 let messages = if step + 1 < ctx.config.max_turn_steps {
@@ -259,8 +277,8 @@ pub fn run_with_instructions<'a>(
             let mut index = 0;
             while index < calls.len() {
                 let start = index;
-                if parallel(&calls[index]) {
-                    while index < calls.len() && parallel(&calls[index]) {
+                if parallel(&items[calls[index]]) {
+                    while index < calls.len() && parallel(&items[calls[index]]) {
                         index += 1;
                     }
                 } else {
@@ -270,13 +288,19 @@ pub fn run_with_instructions<'a>(
                 let outputs = futures_util::future::join_all(
                     calls[start..index]
                         .iter()
-                        .map(|call| execute_call(ctx, call, definitions, mcp.as_ref())),
+                        .map(|index| execute_call(ctx, &items[*index], definitions, mcp.as_ref())),
                 )
                 .await;
                 for output in outputs {
                     items.push(output?);
                 }
-                crate::multimodal::trim_images(items, ctx.config.context_bytes / 2);
+                if crate::multimodal::trim_context_images(
+                    prefix,
+                    items,
+                    ctx.config.context_bytes / 2,
+                ) {
+                    prefix_bytes = crate::session::json_bytes(prefix)?;
+                }
                 if let Some(checkpoint) = &checkpoint {
                     checkpoint
                         .store
@@ -298,10 +322,10 @@ pub fn run_with_instructions<'a>(
 
 // Validate the whole batch before persisting it or allowing any side effect. A malformed
 // later call must not leave earlier writes executed with an unanswerable transcript.
-fn validate_calls(calls: &[Value]) -> Result<()> {
-    ensure!(calls.len() <= 32, "Too many tool calls in a single step");
-    let mut ids = std::collections::HashSet::with_capacity(calls.len());
-    for call in calls {
+fn validate_calls<'a>(calls: impl IntoIterator<Item = &'a Value>) -> Result<()> {
+    let mut ids = std::collections::HashSet::new();
+    for (index, call) in calls.into_iter().enumerate() {
+        ensure!(index < 32, "Too many tool calls in a single step");
         let id = call["call_id"]
             .as_str()
             .filter(|id| {

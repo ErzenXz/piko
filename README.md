@@ -61,6 +61,10 @@ One async event-loop thread, shared tool schemas and HTTP connections, lazy MCP 
 bounded history, files and tool output. No telemetry, daemon, updater or bundled
 browser/model.
 
+Large agent pools can use the [laptop profile](examples/laptop-swarm.toml): shared
+runtime, bounded active turns, disk-backed idle history and compact subagent
+contexts. [Scale tests and limits →](docs/performance.md)
+
 File/search tools, exact patches, image viewing, interactive terminals, subagents
 with messaging, MCP and recoverable sessions are built in. Approved web fetching
 and optional web search/browser automation expand what the agent can verify.

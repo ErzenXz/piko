@@ -223,6 +223,7 @@ struct Process {
     master: Option<Box<dyn MasterPty + Send>>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     group: ProcessGroup,
+    _process_permit: Arc<tokio::sync::OwnedSemaphorePermit>,
     #[cfg(windows)]
     _script: tempfile::TempPath,
 }
@@ -273,7 +274,15 @@ fn spawn(
     size: PtySize,
     reader_handle: ReaderHandle,
     writer_handle: WriterHandle,
+    process_permit: Arc<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<Process> {
+    // portable-pty silently substitutes HOME when cwd is unavailable. A removed
+    // workspace must fail startup instead of executing the approved command there.
+    // This startup check is not a race-proof filesystem sandbox.
+    ensure!(
+        cwd.is_dir(),
+        "Terminal working directory is unavailable or is not a directory"
+    );
     let pair = portable_pty::native_pty_system().openpty(size)?;
     #[cfg(unix)]
     {
@@ -361,6 +370,7 @@ fn spawn(
         master: Some(pair.master),
         child,
         group,
+        _process_permit: process_permit,
         #[cfg(windows)]
         _script: script,
     })
@@ -379,6 +389,7 @@ pub(crate) async fn start(
     session: &str,
     limit: usize,
 ) -> Result<Value> {
+    let process_permit = jobs.acquire_process(cancel)?;
     let job = jobs
         .reserve("terminal", parent, cancel.child_token())
         .await?;
@@ -414,10 +425,12 @@ pub(crate) async fn start(
         std::sync::mpsc::sync_channel::<Box<dyn Write + Send>>(1);
     // Allocate persistent workers BEFORE ConPTY exists. A thread-creation failure
     // cannot strand an inherit-cursor handshake or block the async runtime closing it.
+    let reader_permit = process_permit.clone();
     let reader_thread = std::thread::Builder::new()
         .name("piko-pty-read".into())
         .stack_size(128 * 1024)
         .spawn(move || {
+            let _process_permit = reader_permit;
             if let Ok(reader) = reader_rx.recv() {
                 read_output(reader, output_tx, reader_cancel, protocol_replies);
             }
@@ -426,10 +439,12 @@ pub(crate) async fn start(
         job.finish("failed", error.to_string(), None, limit).await;
         return Err(error.into());
     }
+    let writer_permit = process_permit.clone();
     let writer_thread = std::thread::Builder::new()
         .name("piko-pty-write".into())
         .stack_size(128 * 1024)
         .spawn(move || {
+            let _process_permit = writer_permit;
             if let Ok(writer) = writer_handle_rx.recv() {
                 write_input(
                     writer,
@@ -447,7 +462,14 @@ pub(crate) async fn start(
     let directory = cwd.to_owned();
     let command = command.to_owned();
     let spawned = match tokio::task::spawn_blocking(move || {
-        spawn(&directory, &command, size, reader_handle, writer_handle)
+        spawn(
+            &directory,
+            &command,
+            size,
+            reader_handle,
+            writer_handle,
+            process_permit,
+        )
     })
     .await
     {
@@ -1095,6 +1117,202 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    async fn wait_process_slot(pool: &tokio::sync::Semaphore) {
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while pool.available_permits() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(any(unix, windows))]
+    async fn shell_and_pty_share_process_budget_and_cancellation_releases_workers() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = Arc::new(tokio::sync::Semaphore::new(1));
+        let terminals = Jobs::with_process_limit(4, 1024, pool.clone());
+        let shells = Jobs::with_process_limit(4, 1024, pool.clone());
+        let (peer, mut receiver) = Peer::channel(32);
+        let events = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+        let cancel = CancellationToken::new();
+        #[cfg(unix)]
+        let command = "sleep 30";
+        #[cfg(windows)]
+        let command = "ping -n 31 127.0.0.1 >nul";
+        let started = start(
+            &terminals,
+            directory.path(),
+            command,
+            30,
+            PtySize::default(),
+            None,
+            &cancel,
+            &peer,
+            "shared-pty",
+            1024,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pool.available_permits(), 0);
+        let denied = shells
+            .shell(
+                directory.path(),
+                command,
+                30,
+                true,
+                None,
+                &cancel,
+                &peer,
+                "shared-shell",
+            )
+            .await
+            .unwrap_err();
+        assert!(denied.to_string().contains("Global shell/terminal"));
+        assert!(
+            start(
+                &shells,
+                directory.path(),
+                command,
+                30,
+                PtySize::default(),
+                None,
+                &cancel,
+                &peer,
+                "shared-denied",
+                1024
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            shells.list().await.is_empty(),
+            "Denied starts must not reserve jobs or workers"
+        );
+        let id = started["task_id"].as_str().unwrap();
+        terminals.get(id).await.unwrap().cancel.cancel();
+        assert_eq!(wait_finished(&terminals, id).await["status"], "cancelled");
+        wait_process_slot(&pool).await;
+        let shell = shells
+            .shell(
+                directory.path(),
+                command,
+                30,
+                true,
+                None,
+                &cancel,
+                &peer,
+                "shared-shell",
+            )
+            .await
+            .unwrap();
+        assert_eq!(pool.available_permits(), 0);
+        assert!(
+            start(
+                &terminals,
+                directory.path(),
+                command,
+                30,
+                PtySize::default(),
+                None,
+                &cancel,
+                &peer,
+                "shared-denied",
+                1024
+            )
+            .await
+            .is_err()
+        );
+        let id = shell["task_id"].as_str().unwrap();
+        shells.get(id).await.unwrap().cancel.cancel();
+        assert_eq!(wait_finished(&shells, id).await["status"], "cancelled");
+        wait_process_slot(&pool).await;
+        let finished = shells
+            .shell(
+                directory.path(),
+                "echo released",
+                5,
+                false,
+                None,
+                &cancel,
+                &peer,
+                "shared-reused",
+            )
+            .await
+            .unwrap();
+        assert_eq!(finished["status"], "completed");
+        wait_process_slot(&pool).await;
+        assert_eq!(pool.available_permits(), 1);
+        events.abort();
+    }
+
+    #[tokio::test]
+    #[cfg(any(unix, windows))]
+    async fn cancelled_and_failed_terminal_start_release_process_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = Arc::new(tokio::sync::Semaphore::new(1));
+        let jobs = Jobs::with_process_limit(4, 1024, pool.clone());
+        let (peer, mut receiver) = Peer::channel(32);
+        let events = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert!(
+            start(
+                &jobs,
+                directory.path(),
+                "echo never",
+                5,
+                PtySize::default(),
+                None,
+                &cancel,
+                &peer,
+                "cancel-before-start",
+                1024
+            )
+            .await
+            .is_err()
+        );
+        assert!(jobs.list().await.is_empty());
+        assert_eq!(pool.available_permits(), 1);
+        let cancel = CancellationToken::new();
+        let missing = directory.path().join("missing-directory");
+        assert!(
+            start(
+                &jobs,
+                &missing,
+                "echo never",
+                5,
+                PtySize::default(),
+                None,
+                &cancel,
+                &peer,
+                "failed-start",
+                1024
+            )
+            .await
+            .is_err()
+        );
+        wait_process_slot(&pool).await;
+        assert_eq!(pool.available_permits(), 1);
+        assert!(
+            jobs.shell(
+                &missing,
+                "echo never",
+                5,
+                true,
+                None,
+                &cancel,
+                &peer,
+                "failed-shell"
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(pool.available_permits(), 1);
+        events.abort();
     }
 
     #[tokio::test]

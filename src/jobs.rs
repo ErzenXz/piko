@@ -1,11 +1,16 @@
 use crate::{protocol::Peer, workspace::truncate};
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    process::Stdio,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::Command,
-    sync::{Mutex, Notify},
+    sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore},
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -15,6 +20,7 @@ pub struct Jobs {
     entries: Arc<Mutex<BTreeMap<String, Arc<Job>>>>,
     limit: usize,
     output_limit: usize,
+    processes: Arc<Semaphore>,
 }
 
 pub struct Job {
@@ -25,6 +31,30 @@ pub struct Job {
     pub state: Mutex<JobState>,
     pub done: Notify,
     pub(crate) terminal: Mutex<Option<Arc<crate::terminal::Terminal>>>,
+    retired: OnceLock<Arc<JobRetirements>>,
+}
+
+/// Retire only jobs actually dropped, rather than scanning every live mailbox
+/// between model steps. The queue owns IDs, never jobs or agent contexts.
+#[derive(Default)]
+pub(crate) struct JobRetirements(std::sync::Mutex<Vec<String>>);
+
+impl JobRetirements {
+    pub(crate) fn take(&self) -> Vec<String> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|error| error.into_inner()))
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        if let Some(retired) = self.retired.get() {
+            retired
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(std::mem::take(&mut self.id));
+        }
+    }
 }
 
 pub struct JobState {
@@ -36,11 +66,32 @@ pub struct JobState {
 
 impl Jobs {
     pub fn new(limit: usize, output_limit: usize) -> Self {
+        Self::with_process_limit(limit, output_limit, Arc::new(Semaphore::new(32)))
+    }
+
+    pub fn with_process_limit(
+        limit: usize,
+        output_limit: usize,
+        processes: Arc<Semaphore>,
+    ) -> Self {
         Self {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
             limit,
             output_limit,
+            processes,
         }
+    }
+
+    pub(crate) fn acquire_process(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<Arc<OwnedSemaphorePermit>> {
+        ensure!(!cancel.is_cancelled(), "Task cancelled before starting");
+        let permit = self.processes.clone().try_acquire_owned().context(
+            "Global shell/terminal process limit reached; close or cancel an active process and retry",
+        )?;
+        ensure!(!cancel.is_cancelled(), "Task cancelled before starting");
+        Ok(Arc::new(permit))
     }
 
     pub async fn reserve(
@@ -78,6 +129,7 @@ impl Jobs {
             }),
             done: Notify::new(),
             terminal: Mutex::new(None),
+            retired: OnceLock::new(),
         });
         entries.insert(job.id.clone(), job.clone());
         Ok(job)
@@ -119,7 +171,7 @@ impl Jobs {
 
     pub async fn list(&self) -> Vec<Value> {
         let jobs: Vec<_> = self.entries.lock().await.values().cloned().collect();
-        let mut result = Vec::new();
+        let mut result = Vec::with_capacity(jobs.len());
         for job in jobs {
             result.push(job.snapshot().await);
         }
@@ -144,6 +196,7 @@ impl Jobs {
         peer: &Peer,
         session: &str,
     ) -> Result<Value> {
+        let process_permit = self.acquire_process(cancel)?;
         let job = self.reserve("shell", parent, cancel.child_token()).await?;
         #[cfg(windows)]
         let mut process = {
@@ -199,8 +252,18 @@ impl Jobs {
         let monitor_session = session.to_owned();
         let limit = self.output_limit;
         tokio::spawn(async move {
-            let mut out = tokio::spawn(drain(stdout, job_clone.clone(), limit));
-            let mut err = tokio::spawn(drain(stderr, job_clone.clone(), limit));
+            let mut out = tokio::spawn(drain(
+                stdout,
+                job_clone.clone(),
+                limit,
+                process_permit.clone(),
+            ));
+            let mut err = tokio::spawn(drain(
+                stderr,
+                job_clone.clone(),
+                limit,
+                process_permit.clone(),
+            ));
             let (status, code) = tokio::select! {
                 biased;
                 _ = job_clone.cancel.cancelled() => ("cancelled", None),
@@ -224,6 +287,9 @@ impl Jobs {
                 out.abort();
                 err.abort();
             }
+            // Pipe tasks keep their clones until abort/completion drops readers.
+            // Client output backpressure must not keep a cleaned process slot.
+            drop(process_permit);
             {
                 let mut state = job_clone.state.lock().await;
                 state.status = status.into();
@@ -254,6 +320,10 @@ impl Jobs {
 }
 
 impl Job {
+    pub(crate) fn retire_to(&self, retired: Arc<JobRetirements>) {
+        let _ = self.retired.set(retired);
+    }
+
     pub async fn snapshot(&self) -> Value {
         let state = self.state.lock().await;
         json!({"task_id":self.id,"kind":self.kind,"parent_id":self.parent,"status":state.status,"output":state.output,"exit_code":state.exit_code,"truncated":state.truncated})
@@ -264,48 +334,75 @@ impl Job {
             return;
         }
         let mut state = self.state.lock().await;
-        state.output.push_str(output);
-        if state.output.len() > limit {
-            let mut start = state.output.len() - limit;
-            while !state.output.is_char_boundary(start) {
-                start += 1;
-            }
-            state.output.drain(..start);
-            state.truncated = true;
-        }
+        append_bounded(&mut state, output, limit);
         drop(state);
         self.done.notify_waiters();
     }
 
-    pub async fn finish(&self, status: &str, output: String, code: Option<i32>, limit: usize) {
+    pub async fn finish(&self, status: &str, mut output: String, code: Option<i32>, limit: usize) {
         let mut state = self.state.lock().await;
         state.status = status.into();
         state.truncated = output.len() > limit;
-        state.output = truncate(&output, limit);
+        state.output = if state.truncated {
+            truncate(&output, limit)
+        } else {
+            if output.capacity() > limit.saturating_mul(2) {
+                output.shrink_to_fit();
+            }
+            output
+        };
         state.exit_code = code;
         drop(state);
         self.done.notify_waiters();
     }
 }
 
-async fn drain(mut reader: impl AsyncRead + Unpin, job: Arc<Job>, limit: usize) {
+// Discard old bytes before appending. Appending and then truncating can double
+// the String's retained capacity and transiently copy an arbitrarily large chunk.
+fn append_bounded(state: &mut JobState, output: &str, limit: usize) {
+    state.truncated |= output.len() > limit.saturating_sub(state.output.len());
+    let incoming = if output.len() >= limit {
+        let mut start = output.len() - limit;
+        while !output.is_char_boundary(start) {
+            start += 1;
+        }
+        state.output.clear();
+        &output[start..]
+    } else {
+        let available = limit - output.len();
+        if state.output.len() > available {
+            let mut start = state.output.len() - available;
+            while !state.output.is_char_boundary(start) {
+                start += 1;
+            }
+            state.output.drain(..start);
+        }
+        output
+    };
+    let needed = state.output.len() + incoming.len();
+    if state.output.capacity() < needed {
+        state.output.reserve_exact(incoming.len());
+    }
+    state.output.push_str(incoming);
+}
+
+async fn drain(
+    mut reader: impl AsyncRead + Unpin,
+    job: Arc<Job>,
+    limit: usize,
+    _process_permit: Arc<OwnedSemaphorePermit>,
+) {
     let mut buffer = [0u8; 4096];
     while let Ok(count) = reader.read(&mut buffer).await {
         if count == 0 {
             break;
         }
         let mut state = job.state.lock().await;
-        state
-            .output
-            .push_str(&String::from_utf8_lossy(&buffer[..count]));
-        if state.output.len() > limit {
-            let mut start = state.output.len() - limit;
-            while !state.output.is_char_boundary(start) {
-                start += 1;
-            }
-            state.output.drain(..start);
-            state.truncated = true;
-        }
+        append_bounded(
+            &mut state,
+            &String::from_utf8_lossy(&buffer[..count]),
+            limit,
+        );
     }
 }
 
@@ -478,12 +575,124 @@ impl Drop for ProcessGroup {
     }
 }
 
-#[cfg(windows)]
-use anyhow::Context;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn process_budget_is_shared_and_cancelled_admission_consumes_nothing() {
+        let pool = Arc::new(Semaphore::new(1));
+        let first = Jobs::with_process_limit(4, 1024, pool.clone());
+        let second = Jobs::with_process_limit(4, 1024, pool.clone());
+        let token = CancellationToken::new();
+        let permit = first.acquire_process(&token).unwrap();
+        assert_eq!(pool.available_permits(), 0);
+        assert!(
+            second
+                .acquire_process(&token)
+                .unwrap_err()
+                .to_string()
+                .contains("Global shell/terminal")
+        );
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(
+            second
+                .acquire_process(&cancelled)
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        drop(permit);
+        assert_eq!(pool.available_permits(), 1);
+        assert!(second.acquire_process(&cancelled).is_err());
+        assert_eq!(pool.available_permits(), 1);
+        let job = first.reserve("agent", None, token.clone()).await.unwrap();
+        job.finish("completed", "retained result".into(), None, 1024)
+            .await;
+        let permit = second.acquire_process(&token).unwrap();
+        assert_eq!(
+            first.get(&job.id).await.unwrap().snapshot().await["output"],
+            "retained result"
+        );
+        drop(permit);
+        assert_eq!(pool.available_permits(), 1);
+        assert!(second.list().await.is_empty());
+    }
+
+    #[test]
+    fn rolling_output_bounds_capacity_and_keeps_the_same_utf8_tail() {
+        for limit in [0, 1, 3, 1000, 1024] {
+            let mut state = JobState {
+                status: "running".into(),
+                output: String::new(),
+                exit_code: None,
+                truncated: false,
+            };
+            let mut expected = String::new();
+            for output in [
+                "ready>".to_owned(),
+                "é😀".repeat(400),
+                "tail".to_owned(),
+                "x".repeat(1024 * 1024),
+            ] {
+                expected.push_str(&output);
+                if expected.len() > limit {
+                    let mut start = expected.len() - limit;
+                    while !expected.is_char_boundary(start) {
+                        start += 1;
+                    }
+                    expected.drain(..start);
+                }
+                append_bounded(&mut state, &output, limit);
+                assert_eq!(state.output, expected);
+                assert!(
+                    state.output.capacity() <= limit,
+                    "capacity {} exceeds {limit}",
+                    state.output.capacity()
+                );
+            }
+            assert!(state.truncated);
+        }
+    }
+
+    #[tokio::test]
+    async fn finishing_releases_excess_capacity_from_small_results() {
+        let jobs = Jobs::new(1, 1024);
+        let job = jobs
+            .reserve("agent", None, CancellationToken::new())
+            .await
+            .unwrap();
+        let mut output = String::with_capacity(1024 * 1024);
+        output.push_str("tiny result");
+        job.finish("completed", output, None, 1024).await;
+        let state = job.state.lock().await;
+        assert_eq!(state.output, "tiny result");
+        assert!(state.output.capacity() < 2048);
+        assert!(!state.truncated);
+    }
+
+    #[tokio::test]
+    async fn finishing_moves_small_output_and_bounds_large_utf8_output() {
+        let jobs = Jobs::new(2, 1024);
+        let job = jobs
+            .reserve("agent", None, CancellationToken::new())
+            .await
+            .unwrap();
+        let output = String::from("reusable task output");
+        let allocation = output.as_ptr();
+        job.finish("completed", output, Some(0), 1024).await;
+        {
+            let state = job.state.lock().await;
+            assert_eq!(state.output.as_ptr(), allocation);
+            assert!(!state.truncated);
+            assert_eq!(state.exit_code, Some(0));
+        }
+        job.finish("completed", "é".repeat(20), None, 3).await;
+        let state = job.state.lock().await;
+        assert_eq!(state.output, "é\n[truncated]");
+        assert!(state.truncated);
+    }
 
     #[cfg(windows)]
     #[tokio::test]

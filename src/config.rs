@@ -17,9 +17,14 @@ pub struct Config {
     pub max_subagent_depth: usize,
     pub max_subagents: usize,
     pub max_model_requests: usize,
+    pub max_active_turns: usize,
+    pub max_pending_prompt_bytes: usize,
+    pub resident_history_bytes: usize,
+    pub retained_agent_context_bytes: usize,
     pub max_mcp_connections: usize,
     pub max_searches: usize,
     pub max_jobs: usize,
+    pub max_processes: usize,
     pub max_sessions: usize,
     pub context_bytes: usize,
     pub max_output_tokens: u32,
@@ -50,9 +55,14 @@ impl Default for Config {
             max_subagent_depth: 2,
             max_subagents: 256,
             max_model_requests: 256,
+            max_active_turns: 32,
+            max_pending_prompt_bytes: 64 * 1024 * 1024,
+            resident_history_bytes: 64 * 1024,
+            retained_agent_context_bytes: 2 * 1024 * 1024,
             max_mcp_connections: 32,
             max_searches: 8,
             max_jobs: 16,
+            max_processes: 32,
             max_sessions: 256,
             context_bytes: 384 * 1024,
             max_output_tokens: 16384,
@@ -181,8 +191,12 @@ impl Config {
             "max_subagents must be 1..=1024"
         );
         ensure!(
-            (1..=128).contains(&self.max_jobs),
-            "max_jobs must be 1..=128"
+            (1..=1024).contains(&self.max_jobs),
+            "max_jobs must be 1..=1024"
+        );
+        ensure!(
+            (1..=1024).contains(&self.max_processes),
+            "max_processes must be 1..=1024"
         );
         ensure!(
             (1..=1024).contains(&self.max_sessions),
@@ -191,6 +205,22 @@ impl Config {
         ensure!(
             (1..=1024).contains(&self.max_model_requests),
             "max_model_requests must be 1..=1024"
+        );
+        ensure!(
+            (1..=1024).contains(&self.max_active_turns),
+            "max_active_turns must be 1..=1024"
+        );
+        ensure!(
+            (1024 * 1024..=1024 * 1024 * 1024).contains(&self.max_pending_prompt_bytes),
+            "max_pending_prompt_bytes must be 1MiB..=1GiB"
+        );
+        ensure!(
+            self.resident_history_bytes <= 16 * 1024 * 1024,
+            "resident_history_bytes must be 0..=16MiB"
+        );
+        ensure!(
+            (64 * 1024..=64 * 1024 * 1024).contains(&self.retained_agent_context_bytes),
+            "retained_agent_context_bytes must be 64KiB..=64MiB"
         );
         ensure!(
             (1..=32).contains(&self.max_searches),

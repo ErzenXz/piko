@@ -312,19 +312,72 @@ without overriding ignored-file protections. Native search scans files up to
 128 KiB; fallback up to 1 MiB, with a 20,000-entry walk cap. Narrow searches for
 large repositories. Native search has a 15-second deadline.
 
-Defaults: 256 loaded sessions, 256 concurrent subagents, 256 concurrent model
-requests, 8 searches, 16 jobs per session, depth 2, 384 KiB context per agent,
-32 KiB retained tool output. Model-request/search limits are **global per process**;
-job limits are per session. Limits are configurable, not promises of account
-capacity. Excess model/search work queues; nested subagent admission fails fast
-rather than deadlocking. Completed job records are evicted when slots are needed.
+Defaults: 256 loaded sessions, 256 live subagents, 256 concurrent model requests,
+32 active top-level turns, 32 shell/PTY jobs, 8 searches, 16 jobs per session, depth 2, 384 KiB model
+context per agent, and 32 KiB retained output per job. Model/search/subagent/turn
+limits are **global per process**; job and completed-child-history budgets are per
+session. Counts are configurable up to 1,024 for sessions, children and jobs.
+These limits do not promise provider capacity or start local model instances.
 
-Memory scales with active conversations, in-flight JSON, HTTP buffers, and jobs.
-The context budget bounds serialized model input, not total RSS. Durable history
-is retained separately, up to 16 MiB per loaded session; unload idle sessions to
-release it. The cap does not bound aggregate RSS across all sessions. There
-is a 1 MiB inbound ACP frame limit and bounded SSE/tool/session buffers. Slow clients
-apply output backpressure rather than accumulating unlimited updates.
+`max_processes = 32` is shared across all sessions' shell and terminal jobs.
+Admission fails before starting another job when full; close/cancel one and retry.
+Permits stay with real process/I/O cleanup, not retained completed job records.
+This counts Piko-started shell/PTY jobs, not every descendant a command may fork;
+MCP has its own connection limit. The laptop profile uses eight process slots.
+`_harness/stats` exposes current root turns, live children, shell/PTY slots and
+their configured process limit alongside model usage counters.
+
+Top-level turns queue before history, project instructions and tools are prepared.
+Child model requests use a separate shared queue, so a parent waiting for a child
+does not consume the child's top-level turn slot. Live-child admission fails fast
+when its limit is reached, avoiding nested lifetime-permit deadlocks. Completed
+job records are evicted when slots are needed; collect outputs before starting
+more work than `max_jobs` can retain.
+
+Saved history stays durable up to 16 MiB/session. By default, idle transcripts
+above `resident_history_bytes = 65536` release their JSON trees and reload only
+when a turn is admitted or a picker change needs saving. Set this to zero to make
+all nonempty idle transcripts cold, trading disk reads for RAM; 16 MiB retains
+all saved history in memory. Preparation failures release hydrated history too.
+This threshold counts encoded history bytes, not actual allocator/RSS usage.
+
+Active model windows borrow saved items and own only the new exchange. Historical
+images use copy-on-write when omitted, preserving saved originals. Save snapshots
+share immutable turns and serialize through a capped 64 KiB file buffer off the
+event loop. File work uses up to eight workers at once, and full load/picker-save
+preparation has a separate maximum of eight (or fewer with a smaller root-turn
+limit). These bounds cover decoded histories waiting to be saved as well as reads.
+Snapshots/transcripts up to 256 KiB use a bounded inline serialization/parser
+path; larger saves retain the shared-snapshot worker path. Neither the inline
+threshold nor the worker count is a bound on total RSS.
+
+Completed child contexts are stored as compact JSON under the aggregate
+`retained_agent_context_bytes = 2097152` per-session budget. Oldest contexts expire
+first; task outputs remain available until job eviction. Recent children resume
+with `followup_agent`; expired children return explicit summary-and-respawn
+guidance. Cancelled child histories are released immediately.
+
+Inbound ACP frames have a 1 MiB limit. Queued and executing prompt frames share
+`max_pending_prompt_bytes = 67108864` globally; overflow returns an error instructing
+the client to retry when work completes. The reader continues handling cancellation
+and permission responses. JSON objects, active histories, HTTP/SSE buffers, jobs,
+MCP servers, terminals and browsers add memory beyond these encoded-byte budgets.
+Slow clients apply output backpressure. These controls do not cap total process RSS.
+
+ACP stdout queues at most 64 compact frames under a 4 MiB encoded-byte budget,
+including the current write. One larger valid frame may own that budget
+exclusively; the budget is not a maximum valid response size. Ready bursts share
+flushes without a timer delay. Cancelling or abandoning a blocked permission
+request retires its pending response registration too.
+
+For large logical agent pools, start with [the laptop profile](../examples/laptop-swarm.toml):
+1,024 sessions/children, 16 active root turns/model requests, cold idle history,
+96 KiB contexts and smaller tool/job buffers. Provider queue time counts toward
+the request deadline; tune workload and allowance rather than raising every
+limit. A coordinator spawning hundreds of children may need a larger context
+to retain its task IDs. Share one Piko process through an ACP client that supports
+multiple sessions; launching 1,000 separate Piko processes duplicates runtime
+overhead. External models and browsers have their own resource costs.
 
 ### Cache reuse, measured honestly
 
