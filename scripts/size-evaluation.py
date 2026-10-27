@@ -31,6 +31,7 @@ TARGETS = {
 }
 TLS_13_TEST = "tls_13_accepts_explicit_test_root_and_dns_subject_alt_name"
 TLS_TESTS = {
+    "tls_fixture_bind_never_attempts_reverse_dns",
     "tls_12_accepts_explicit_test_root_and_ip_subject_alt_name",
     TLS_13_TEST,
     "untrusted_certificate_is_rejected",
@@ -209,7 +210,7 @@ def tls_results(stdout, returncode, platform_name):
                 raise ValueError("Duplicate TLS test result")
             tests[name] = outcome
     if set(tests) != TLS_TESTS:
-        raise ValueError("Native TLS experiment must execute exactly the eight expected TLS tests")
+        raise ValueError("Native TLS experiment must execute exactly the nine expected TLS/fixture tests")
     if "ignored" in tests.values():
         raise ValueError("Native TLS experiment may not ignore TLS tests")
     failed = {name for name, outcome in tests.items() if outcome == "FAILED"}

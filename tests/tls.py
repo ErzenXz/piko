@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+from socketserver import TCPServer
 import ssl
 import subprocess
 import tempfile
@@ -128,9 +129,26 @@ class Handler(BaseHTTPRequestHandler):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
+    def server_bind(self):
+        # HTTPServer.server_bind performs getfqdn(), which can block on reverse
+        # DNS for loopback on macOS CI. This fixture never needs a public name.
+        TCPServer.server_bind(self)
+        self.server_name = "localhost"
+        self.server_port = self.server_address[1]
+
     def handle_error(self, _request, _client_address):
         # Timeout/cancellation tests deliberately close sockets mid-response.
         pass
+
+
+def check_no_reverse_dns():
+    from unittest.mock import patch
+
+    with patch("socket.getfqdn", side_effect=AssertionError("fixture attempted reverse DNS")):
+        with Server(("127.0.0.1", 0), Handler) as server:
+            assert server.server_name == "localhost"
+            assert server.server_port > 0
+    print("Loopback TLS fixture binds without reverse DNS", flush=True)
 
 
 def main():
@@ -138,7 +156,11 @@ def main():
     parser.add_argument("--tls-version", choices=["1.2", "1.3", "both"], default="both")
     parser.add_argument("--certificate", choices=["server", "expired", "future"], default="server")
     parser.add_argument("--temporary-directory", type=Path)
+    parser.add_argument("--check-no-dns", action="store_true")
     args = parser.parse_args()
+    if args.check_no_dns:
+        check_no_reverse_dns()
+        return
     fixtures = Path(__file__).parent / "fixtures" / "tls"
     temporary = None
     if args.temporary_directory is None:

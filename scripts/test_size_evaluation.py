@@ -35,7 +35,7 @@ class EvaluationTests(unittest.TestCase):
                 evaluation.patch_native_tls(path)
 
     def test_all_tests_must_pass_on_windows(self):
-        self.assertEqual(evaluation.tls_results(results(), 0, 'win32-x64')['passed'], 8)
+        self.assertEqual(evaluation.tls_results(results(), 0, 'win32-x64')['passed'], 9)
         with self.assertRaises(ValueError):
             evaluation.tls_results(results([evaluation.TLS_13_TEST]), 101, 'win32-x64')
 
@@ -43,7 +43,7 @@ class EvaluationTests(unittest.TestCase):
         output = results([evaluation.TLS_13_TEST]) + '\ntrusted TLS 1.3 endpoint; do not silently downgrade: bad protocol version\n'
         parsed = evaluation.tls_results(output, 101, 'darwin-arm64')
         self.assertEqual(parsed['failed'], 1)
-        self.assertEqual(parsed['passed'], 7)
+        self.assertEqual(parsed['passed'], 8)
         for invalid in [results([evaluation.TLS_13_TEST]), results(['https_request_timeout_is_bounded']), output.replace('bad protocol version', 'timed out')]:
             with self.assertRaises(ValueError):
                 evaluation.tls_results(invalid, 101, 'darwin-arm64')

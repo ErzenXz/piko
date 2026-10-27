@@ -107,6 +107,26 @@ impl Drop for Fixture {
     }
 }
 
+#[test]
+fn tls_fixture_bind_never_attempts_reverse_dns() {
+    let python = std::env::var_os("PYTHON")
+        .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/tls.py");
+    let status = Command::new(python)
+        .arg("-B")
+        .arg(script)
+        .arg("--check-no-dns")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .expect("run loopback fixture DNS-denial regression");
+    assert!(
+        status.success(),
+        "loopback fixture must never resolve its hostname"
+    );
+}
+
 #[tokio::test]
 async fn tls_12_accepts_explicit_test_root_and_ip_subject_alt_name() {
     let fixture = Fixture::start("1.2");

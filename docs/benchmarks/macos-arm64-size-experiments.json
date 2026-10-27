@@ -104,7 +104,8 @@
       "bytes": 3352528,
       "sha256": "f6f89093cab6db5e276a9b2a1b27e352e54db410ea4720683e58b6efe5c5a30c",
       "experiment": "single-crate",
-      "configurationNotes": "trim-z plus entry point in library; no boxing/dynamic writers/extra compiler flags."
+      "configurationNotes": "trim-z plus entry point in library; no boxing/dynamic writers/extra compiler flags.",
+      "selected": true
     },
     {
       "profile": "z",
@@ -114,6 +115,13 @@
       "selected": false,
       "experiment": "thin",
       "configurationNotes": "boxed dispatcher plus thin LTO, no shared JSON or extra compiler flags."
+    },
+    {
+      "experiment": "entry-outliner",
+      "bytes": 3305472,
+      "selected": false,
+      "reason": "Clean CI control-throughput regressions on macOS/Linux arm64; removed despite extra size saving.",
+      "ciRun": "https://github.com/ErzenXz/piko/actions/runs/40524170871"
     }
   ]
 }

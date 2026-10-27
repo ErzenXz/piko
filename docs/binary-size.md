@@ -8,7 +8,7 @@ subagents and recovery remain available.
 ## Retained candidate
 
 On macOS arm64 with Rust 1.99.0, the native executable fell from **3,419,632 to
-3,305,472 bytes**: **114,160 bytes / 3.34%**. This is a modest reduction;
+3,352,528 bytes**: **67,104 bytes / 1.96%**. This is a modest reduction;
 larger reductions from the tested native TLS backend did not preserve compatibility.
 
 - The native entry point delegates to the library, keeping async implementation
@@ -18,8 +18,8 @@ larger reductions from the tested native TLS backend did not preserve compatibil
   release builds. Piko installs no logger/subscriber; ACP events and returned
   errors remain enabled. Rust embedders can build with `--no-default-features`
   to retain dependency logging. No new resolved runtime crates were added.
-- AArch64 enables LLVM's machine outliner across eligible functions with three
-  extra passes. It shares instruction sequences without removing capabilities.
+- Extra AArch64 outlining was tested and removed: its additional size saving
+  came with lower clean-runner control throughput on macOS/Linux arm64.
   Normal Cargo size optimization, fat LTO, stripping and panic-abort remain.
 
 The [raw local comparison](benchmarks/macos-arm64-binary-size-development.json)
@@ -28,9 +28,7 @@ requests, 512 read-only control RPCs per run, startup, native RSS and throughput
 It excludes model inference, fixture and external-tool memory. OS caches are warm;
 startup excludes fixture creation. Sampled RSS is not a guaranteed production peak.
 
-Local wallclock results varied substantially across repeated experiments. The
-recorded sample has lower prompt/control throughput; no universal speedup is
-claimed. Read both raw values and paired changes. The clean-runner workflow
+Local wallclock results varied substantially across repeated experiments. No universal speedup is claimed. Read both raw values and paired changes. The clean-runner workflow
 produces before/after measurements separately for all six release targets.
 
 ## Rejected experiments
@@ -46,6 +44,7 @@ produces before/after measurements separately for all six release targets.
 | Nightly optimized standard library | 3,270,944 | Different compiler; not adopted |
 | Shared dynamic JSON writers / boxed MCP polling | 3,352,704 | Negligible saving versus dispatcher-only experiment; rejected |
 | Aggressive inlining limits | 3,323,248 | Larger than the outliner candidate |
+| CLI entry + forced AArch64 outlining | 3,305,472 | ARM control-throughput regression; rejected |
 
 [Experiment metadata](benchmarks/macos-arm64-size-experiments.json) records
 hashes and configurations. These trials were not published.
@@ -84,9 +83,10 @@ python3 -B scripts/size-evaluation.py compare \
 The helper requires a clean committed checkout, builds scratch sources outside
 the repository, and deletes its build output. `.github/workflows/size.yml` runs
 this on macOS/Linux/Windows x64 and arm64 and stores `runtime-size-*` reports.
+The [rejected outliner sample](benchmarks/macos-arm64-outliner-rejected.json) is retained separately.
 Two isolated native TLS jobs store `runtime-native-tls-*` reports; only the known
-macOS TLS 1.3 incompatibility is permitted to fail in those experiments. All eight
-TLS tests must pass in the production configuration. Python and installed OpenSSL
+macOS TLS 1.3 incompatibility is permitted to fail in those experiments. All nine
+TLS/fixture tests must pass in the production configuration. Python and installed OpenSSL
 are required for TLS development tests; Piko itself does not require either.
 
 Compiler settings were checked against the [Cargo profile documentation](https://doc.rust-lang.org/cargo/reference/profiles.html)
