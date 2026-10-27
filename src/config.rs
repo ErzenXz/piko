@@ -11,15 +11,24 @@ pub struct Config {
     pub model: String,
     pub base_url: String,
     pub reasoning_effort: Option<String>,
+    pub provider_profile: String,
+    pub service_tier: Option<String>,
+    pub prompt_cache_ttl: Option<String>,
+    pub openrouter_prompt_cache: bool,
     pub prompt_cache_retention: Option<String>,
     pub state_dir: PathBuf,
     pub max_turn_steps: usize,
     pub max_subagent_depth: usize,
     pub max_subagents: usize,
     pub max_model_requests: usize,
+    pub max_active_turns: usize,
+    pub max_pending_prompt_bytes: usize,
+    pub resident_history_bytes: usize,
+    pub retained_agent_context_bytes: usize,
     pub max_mcp_connections: usize,
     pub max_searches: usize,
     pub max_jobs: usize,
+    pub max_processes: usize,
     pub max_sessions: usize,
     pub context_bytes: usize,
     pub max_output_tokens: u32,
@@ -44,15 +53,24 @@ impl Default for Config {
             model: "gpt-6-luna".into(),
             base_url: "https://api.openai.com/v1".into(),
             reasoning_effort: None,
+            provider_profile: "auto".into(),
+            service_tier: None,
+            prompt_cache_ttl: None,
+            openrouter_prompt_cache: true,
             prompt_cache_retention: None,
             state_dir: default_state_dir(),
             max_turn_steps: 80,
             max_subagent_depth: 2,
             max_subagents: 256,
             max_model_requests: 256,
+            max_active_turns: 32,
+            max_pending_prompt_bytes: 64 * 1024 * 1024,
+            resident_history_bytes: 64 * 1024,
+            retained_agent_context_bytes: 2 * 1024 * 1024,
             max_mcp_connections: 32,
             max_searches: 8,
             max_jobs: 16,
+            max_processes: 32,
             max_sessions: 256,
             context_bytes: 384 * 1024,
             max_output_tokens: 16384,
@@ -140,10 +158,40 @@ impl Config {
         );
         if let Some(retention) = &self.prompt_cache_retention {
             ensure!(
-                ["in-memory", "24h"].contains(&retention.as_str()),
-                "prompt_cache_retention must be in-memory or 24h (only for supported OpenAI models)"
+                ["in_memory", "in-memory", "24h"].contains(&retention.as_str()),
+                "prompt_cache_retention must be in_memory or 24h (legacy OpenAI models only)"
             );
         }
+        ensure!(
+            ["auto", "openai", "openrouter", "compatible"]
+                .contains(&self.provider_profile.as_str()),
+            "provider_profile must be auto, openai, openrouter, or compatible"
+        );
+        if let Some(tier) = &self.service_tier {
+            ensure!(
+                ["auto", "default", "fast", "priority", "flex", "ultrafast"]
+                    .contains(&tier.as_str()),
+                "Invalid service_tier: expected auto, default, fast, priority, flex, or ultrafast"
+            );
+            ensure!(
+                tier != "ultrafast" || self.wire_api == "responses",
+                "Ultrafast mode requires Responses"
+            );
+        }
+        if let Some(ttl) = &self.prompt_cache_ttl {
+            ensure!(
+                ["30m", "12h"].contains(&ttl.as_str()),
+                "prompt_cache_ttl must be 30m or 12h"
+            );
+            ensure!(
+                ttl != "12h" || self.wire_api == "responses",
+                "12h prompt caching requires Responses"
+            );
+        }
+        ensure!(
+            self.prompt_cache_ttl.is_none() || self.prompt_cache_retention.is_none(),
+            "Choose prompt_cache_ttl or legacy prompt_cache_retention, not both"
+        );
         ensure!(
             ["auto", "chatgpt", "api_key", "none"].contains(&self.auth.as_str()),
             "auth must be auto, chatgpt, api_key, or none"
@@ -181,8 +229,12 @@ impl Config {
             "max_subagents must be 1..=1024"
         );
         ensure!(
-            (1..=128).contains(&self.max_jobs),
-            "max_jobs must be 1..=128"
+            (1..=1024).contains(&self.max_jobs),
+            "max_jobs must be 1..=1024"
+        );
+        ensure!(
+            (1..=1024).contains(&self.max_processes),
+            "max_processes must be 1..=1024"
         );
         ensure!(
             (1..=1024).contains(&self.max_sessions),
@@ -191,6 +243,22 @@ impl Config {
         ensure!(
             (1..=1024).contains(&self.max_model_requests),
             "max_model_requests must be 1..=1024"
+        );
+        ensure!(
+            (1..=1024).contains(&self.max_active_turns),
+            "max_active_turns must be 1..=1024"
+        );
+        ensure!(
+            (1024 * 1024..=1024 * 1024 * 1024).contains(&self.max_pending_prompt_bytes),
+            "max_pending_prompt_bytes must be 1MiB..=1GiB"
+        );
+        ensure!(
+            self.resident_history_bytes <= 16 * 1024 * 1024,
+            "resident_history_bytes must be 0..=16MiB"
+        );
+        ensure!(
+            (64 * 1024..=64 * 1024 * 1024).contains(&self.retained_agent_context_bytes),
+            "retained_agent_context_bytes must be 64KiB..=64MiB"
         );
         ensure!(
             (1..=32).contains(&self.max_searches),

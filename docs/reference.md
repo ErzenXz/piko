@@ -312,38 +312,156 @@ without overriding ignored-file protections. Native search scans files up to
 128 KiB; fallback up to 1 MiB, with a 20,000-entry walk cap. Narrow searches for
 large repositories. Native search has a 15-second deadline.
 
-Defaults: 256 loaded sessions, 256 concurrent subagents, 256 concurrent model
-requests, 8 searches, 16 jobs per session, depth 2, 384 KiB context per agent,
-32 KiB retained tool output. Model-request/search limits are **global per process**;
-job limits are per session. Limits are configurable, not promises of account
-capacity. Excess model/search work queues; nested subagent admission fails fast
-rather than deadlocking. Completed job records are evicted when slots are needed.
+Defaults: 256 loaded sessions, 256 live subagents, 256 concurrent model requests,
+32 active top-level turns, 32 shell/PTY jobs, 8 searches, 16 jobs per session, depth 2, 384 KiB model
+context per agent, and 32 KiB retained output per job. Model/search/subagent/turn
+limits are **global per process**; job and completed-child-history budgets are per
+session. Counts are configurable up to 1,024 for sessions, children and jobs.
+These limits do not promise provider capacity or start local model instances.
 
-Memory scales with active conversations, in-flight JSON, HTTP buffers, and jobs.
-The context budget bounds serialized model input, not total RSS. Durable history
-is retained separately, up to 16 MiB per loaded session; unload idle sessions to
-release it. The cap does not bound aggregate RSS across all sessions. There
-is a 1 MiB inbound ACP frame limit and bounded SSE/tool/session buffers. Slow clients
-apply output backpressure rather than accumulating unlimited updates.
+`max_processes = 32` is shared across all sessions' shell and terminal jobs.
+Admission fails before starting another job when full; close/cancel one and retry.
+Permits stay with real process/I/O cleanup, not retained completed job records.
+This counts Piko-started shell/PTY jobs, not every descendant a command may fork;
+MCP has its own connection limit. The laptop profile uses eight process slots.
+`_harness/stats` exposes current root turns, live children, shell/PTY slots and
+their configured process limit alongside model usage counters.
+
+Top-level turns queue before history, project instructions and tools are prepared.
+Child model requests use a separate shared queue, so a parent waiting for a child
+does not consume the child's top-level turn slot. Live-child admission fails fast
+when its limit is reached, avoiding nested lifetime-permit deadlocks. Completed
+job records are evicted when slots are needed; collect outputs before starting
+more work than `max_jobs` can retain.
+
+Saved history stays durable up to 16 MiB/session. By default, idle transcripts
+above `resident_history_bytes = 65536` release their JSON trees and reload only
+when a turn is admitted or a picker change needs saving. Set this to zero to make
+all nonempty idle transcripts cold, trading disk reads for RAM; 16 MiB retains
+all saved history in memory. Preparation failures release hydrated history too.
+This threshold counts encoded history bytes, not actual allocator/RSS usage.
+
+Active model windows borrow saved items and own only the new exchange. Historical
+images use copy-on-write when omitted, preserving saved originals. Save snapshots
+share immutable turns and serialize through a capped 64 KiB file buffer off the
+event loop. File work uses up to eight workers at once, and full load/picker-save
+preparation has a separate maximum of eight (or fewer with a smaller root-turn
+limit). These bounds cover decoded histories waiting to be saved as well as reads.
+Snapshots/transcripts up to 256 KiB use a bounded inline serialization/parser
+path; larger saves retain the shared-snapshot worker path. Neither the inline
+threshold nor the worker count is a bound on total RSS.
+
+Completed child contexts are stored as compact JSON under the aggregate
+`retained_agent_context_bytes = 2097152` per-session budget. Oldest contexts expire
+first; task outputs remain available until job eviction. Recent children resume
+with `followup_agent`; expired children return explicit summary-and-respawn
+guidance. Cancelled child histories are released immediately.
+
+Inbound ACP frames have a 1 MiB limit. Queued and executing prompt frames share
+`max_pending_prompt_bytes = 67108864` globally; overflow returns an error instructing
+the client to retry when work completes. The reader continues handling cancellation
+and permission responses. JSON objects, active histories, HTTP/SSE buffers, jobs,
+MCP servers, terminals and browsers add memory beyond these encoded-byte budgets.
+Slow clients apply output backpressure. These controls do not cap total process RSS.
+
+ACP stdout queues at most 64 compact frames under a 4 MiB encoded-byte budget,
+including the current write. One larger valid frame may own that budget
+exclusively; the budget is not a maximum valid response size. Ready bursts share
+flushes without a timer delay. Cancelling or abandoning a blocked permission
+request retires its pending response registration too.
+
+For large logical agent pools, start with [the laptop profile](../examples/laptop-swarm.toml):
+1,024 sessions/children, 16 active root turns/model requests, cold idle history,
+96 KiB contexts and smaller tool/job buffers. Provider queue time counts toward
+the request deadline; tune workload and allowance rather than raising every
+limit. A coordinator spawning hundreds of children may need a larger context
+to retain its task IDs. Share one Piko process through an ACP client that supports
+multiple sessions; launching 1,000 separate Piko processes duplicates runtime
+overhead. External models and browsers have their own resource costs.
 
 ### Cache reuse, measured honestly
 
-Stable instruction/tool ordering, append-only exchanges, stable per-session OpenAI
-`prompt_cache_key`, and ordered tool results preserve reusable prompt prefixes.
-No changing timestamps, fake padding, or redundant model-side summaries are added.
-Optional `prompt_cache_retention = "24h"` is sent only to the OpenAI API (not
-ChatGPT/custom endpoints); enable it only for models that support it. Newer model
-families can use different caching controls; unsupported settings may be rejected.
+Stable instructions, tool order, append-only exchanges and ordered tool results
+preserve reusable prefixes. OpenAI keys remain stable per session; child agents
+use separate stable keys. Piko never caches generated answers as fresh responses,
+pads prompts, prewarms models, or promises a cache-hit percentage.
 
-`_harness/usage` reports provider-reported input, output, cached input tokens, and
-**cached-input / total-input token ratio**. `_harness/stats` aggregates only
-responses with cache details; absent details are unknown (`null`), not invented
-hits or zeroes. Chat Completions requests ask for streamed usage. This is a token
-ratio, not the percentage of requests hitting a cache.
+For the official OpenAI API, GPT-5.6 and later use
+`prompt_cache_options = {mode: "implicit", ttl: "30m"}` on the wire. This keeps
+upstream automatic caching enabled; short or changed prefixes may have no hits.
+For Responses, optionally set `prompt_cache_ttl = "12h"` in Piko's TOML config.
+Chat Completions supports only `"30m"`. Earlier model families use optional
+`prompt_cache_retention = "in_memory"` or `"24h"`; the older Piko spelling
+`"in-memory"` is accepted and normalized. GPT-5.5 supports only `"24h"`.
+Using a legacy lifetime with a modern model fails clearly before the request.
+Subscription sign-in leaves cache lifetime to its backend.
 
-OpenAI caching requires repeated eligible prefixes; short prompts, changed tools,
-context eviction, cache expiry, and heavy routing traffic reduce reuse. A 99%
-hit rate cannot be guaranteed by a harness. See [OpenAI's caching guide](https://platform.openai.com/docs/guides/prompt-caching).
+Longer retention can cost more for cache writes. Cache reads and writes are
+separate counters; increasing retention or concurrency does not guarantee savings.
+Keep the automatic defaults until your workload's reported usage supports a
+change. [OpenAI cache semantics and lifetime pricing](https://developers.openai.com/api/docs/guides/prompt-caching).
+
+OpenRouter automatically receives a stable `x-session-id` for best-effort sticky
+routing. Anthropic models, including `~anthropic/` aliases, also receive the
+provider's automatic `cache_control: {type: "ephemeral"}` option. Set
+`openrouter_prompt_cache = false` to omit that option; existing automatic provider
+caching can still apply. [OpenRouter caching and routing](https://openrouter.ai/docs/guides/best-practices/prompt-caching).
+
+Only exact official endpoints are recognized automatically. For an explicitly
+trusted proxy, `provider_profile = "openai"` or `"openrouter"` opts into those
+wire fields. The default `"auto"` leaves other compatible endpoints conservative;
+`"compatible"` explicitly disables automatic provider detection. This setting
+changes wire options, never authentication or where credentials may be sent.
+Unsupported explicit lifetime/tier settings fail rather than being silently lost.
+
+`_harness/usage` includes input, output, cached-input and cache-write token counts,
+plus the returned `serviceTier` when supplied. `_harness/stats` exposes
+`totalInputTokens`, `totalOutputTokens`, `responsesWithUsage` and
+`cacheDetailsCoverage` for all recognized usage. `inputTokenCacheHitRate` is a
+token-weighted ratio over responses with known cache reads; missing details remain
+`null`. Compatibility aliases `inputTokens`/`outputTokens` in the aggregate cover
+only those known-cache responses; use `total*` for complete observed totals.
+Writes never count as hits. Counters normalize OpenAI/OpenRouter, DeepSeek, and
+Anthropic/Gemini metadata shapes; this does not add their native wire protocols.
+No dollar cost is guessed from token counts.
+
+### Fast processing and recovery
+
+Set `service_tier = "fast"` in your external Piko config to request OpenAI Fast
+processing. `"priority"` is its API alias; subscription Fast is normalized to
+`"priority"` on the wire. API-key requests also accept `"auto"`, `"default"`,
+`"flex"` and `"ultrafast"`; Ultrafast requires Responses and an eligible model
+and account. Omit the setting to use the provider's account/project default.
+Fast and Ultrafast are **opt-in** and can change cost or plan usage. A request is
+not a guarantee: Piko reports the tier actually returned by the provider.
+It does not silently switch models or remove a rejected service tier.
+Subscription backend options beyond the documented Codex mapping have not been
+live-validated. [Fast](https://developers.openai.com/api/docs/guides/fast-mode),
+[Ultrafast](https://developers.openai.com/api/docs/guides/ultrafast-mode),
+[Codex tier mapping](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+One total deadline covers queueing, authentication, backoff and streaming.
+Transient HTTP failures before streaming receive at most three jittered retries;
+`retry-after-ms`, fractional `Retry-After` and HTTP dates are honored. Delays over
+30 seconds or outside the remaining deadline return a retry-later error, without
+retrying early. Billing/spend-cap errors and `x-should-retry: false` stop immediately.
+Error envelopes are limited to 8 KiB and their arbitrary messages are not echoed.
+Connection and timeout errors may retry; ambiguous request failures do not.
+
+Streams and completed tools are never automatically replayed. Chat-compatible
+providers may end cleanly after a valid finish marker without `[DONE]`; missing,
+contradictory or trailing choice data fails before tool execution. Every call's
+JSON arguments are validated before executing any call in its batch.
+[HTTP retry semantics](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after),
+[OpenAI errors](https://developers.openai.com/api/docs/guides/error-codes),
+[Claude overload/spend-cap errors](https://platform.claude.com/docs/en/api/errors).
+
+For Ollama's compatible `/v1` endpoints, configure model residency with the
+**server's** `OLLAMA_KEEP_ALIVE`; Piko does not inject the native-only `keep_alive`
+field. Longer residency improves warm latency but retains model memory. Keep
+parallel requests modest because their context memory grows with concurrency.
+[Ollama compatibility](https://docs.ollama.com/api/openai-compatibility),
+[Ollama memory settings](https://docs.ollama.com/faq).
 
 ## MCP servers
 

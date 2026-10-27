@@ -23,6 +23,10 @@ jobs:
           cargo fetch --locked
           python3 -B -m unittest discover -s scripts -p test_licenses.py
           python3 -B scripts/licenses.py --check
+      - name: Verify size experiment and benchmark guards
+        run: |
+          python3 -B -m unittest discover -s scripts -p test_size_evaluation.py
+          python3 -B -m unittest discover -s tests -p test_size_benchmark.py
       - run: cargo clippy --locked --all-targets -- -D warnings
   native:
     name: ${{ matrix.platform }}
@@ -78,7 +82,20 @@ jobs:
           PIKO_NATIVE_DESKTOP_TEST: '1'
         run: python tests/computer_native.py
       - run: python tests/reliability.py
+      - run: python tests/providers.py
       - run: python tests/tools.py
+      - name: Verify bounded session and subagent pools
+        run: |
+          python -B tests/scalability.py --binary "$PIKO_BIN" --sessions 128 --model-concurrency 8 --active-turns 8 --cancel-queued 8 --resident-history-bytes 0 --turns 3 --samples 2 --output "$RUNNER_TEMP/piko-scale-sessions-${{ matrix.platform }}.json"
+          python -B tests/subagent_scalability.py --binary "$PIKO_BIN" --agents 64 --model-concurrency 8 --samples 2 --output "$RUNNER_TEMP/piko-scale-children-${{ matrix.platform }}.json"
+          python -B tests/long_history_benchmark.py --binary "$PIKO_BIN" --sessions 4 --history-mib 1 --samples 2 --output "$RUNNER_TEMP/piko-scale-history-${{ matrix.platform }}.json"
+      - name: Preserve native scale verification reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-perf-${{ matrix.platform }}
+          path: ${{ runner.temp }}/piko-scale-*.json
+          if-no-files-found: error
+          retention-days: 7
       - run: pnpm test:release
       - run: python -B -m unittest discover -s scripts -p test_verify_release.py
       - run: pnpm test:package

@@ -6,6 +6,139 @@ browsers or models until explicitly needed. Cap concurrency to your machine and
 provider allowance; unload idle sessions with `_harness/session/unload` to release
 retained history and jobs.
 
+## Current development: active history and runtime resources (2026-10-27)
+
+Compared the previous development binary with this pass in three alternating
+pairs on macOS arm64. Both used 32 sessions with 8 MiB of prior history each,
+128 KiB prompts, a 384 KiB model window and 32 held mock response streams. The
+fixture verifies every original turn, the new exchange, model-window ordering,
+reload playback and that omission notices never enter saved history.
+
+| Median across three runs | Previous development | Current development |
+| --- | ---: | ---: |
+| Native binary bytes | 3,352,912 | 3,403,024 |
+| Observed workload maximum RSS | 944,560 KiB | 295,232 KiB |
+| RSS after full-history commits | 692,352 KiB | 292,224 KiB |
+| Initial history load and replay | 2.592 s | 1.992 s |
+| Prepare all model requests | 0.910 s | 0.715 s |
+| Release replies through full-history commit | 1.406 s | 0.389 s |
+| Durable reload and replay | 2.556 s | 1.984 s |
+
+This workload's sampled maximum is **68.7% lower**; its commit phase is about
+**3.6 times faster**, rather than an end-to-end model speed claim. All three
+current sampled maxima were below all three previous maxima. Model windows
+borrow saved items; only current work is mutable. Image-only copy-on-write
+preserves durable screenshots. Save snapshots share turn storage, large files
+stream through capped 64 KiB buffers and preparation/file operations are bounded.
+Small transcripts up to 256 KiB use bounded inline encoding/parsing after I/O
+admission, avoiding a worker buffer where a compact snapshot suffices.
+
+The **short-session workload has a memory tradeoff**. The same three paired runs
+of 1,000 sessions, four 32 KiB turns each, 16 mock requests and a 384 KiB context
+completed all history, cancellation and reload checks, but sampled peak RSS rose
+from 105,440 to 133,296 KiB (**26.4% higher**). Completed-session RSS medians were
+64,928 versus 121,056 KiB. First-turn time improved from 2.616 to 2.463 s; the
+following three turns improved from 10.355 to 9.130 s (11.8%). Allocator retention,
+worker scheduling and allocation patterns affect RSS even after objects are
+released; this pass is not uniformly lighter for every workload.
+
+A single 1,000-actual-child fixture passed at **33,744 KiB sampled maximum**,
+with 16 simultaneous mock requests and a 1.572 s workload including measurement
+holds. Recent followup, older-context expiry, read-only isolation and preserved
+results passed. A separate 1,000-session laptop-profile-equivalent run passed
+with 81,744 KiB sampled maximum. Neither is a repeated speed comparison.
+
+No runtime dependencies were added. The native binary grows by 50,112 bytes
+(1.5%). Global shell/PTY admission prevents independent sessions from each
+opening their own full process/terminal allowance. Retirement events replace
+repeated mailbox scans; output queues and rolling logs are byte bounded.
+
+[Full samples, hashes, settings and limitations](benchmarks/macos-arm64-active-history-development.json).
+These are unpublished native-PID measurements, excluding Python, Node launcher,
+inference and external-tool memory. Other host activity was not controlled, and
+sampled maxima are not guaranteed absolute peaks. CI now exercises session,
+child and long-history fixtures on all six native targets, including Windows
+working-set collection; check the workflow result separately from local data.
+
+```sh
+python3 -B tests/long_history_benchmark.py --binary /absolute/previous/piko \
+  --binary /absolute/current/piko --sessions 32 --history-mib 8
+```
+
+Use `.exe` native paths on Windows. The benchmark writes about 256 MiB of
+temporary fixture history per binary and removes it afterward. Published npm
+0.7.1 does not include either development pass; the earlier pass below is a
+different binary, identified separately by hash.
+
+## Earlier development: bounded 1,000-agent pools (2026-10-27)
+
+These changes are **local and unpublished**, based on `f57b53e`. Compared the
+public npm 0.7.1 macOS arm64 binary with the development release build in three
+alternating pairs, without concurrent task builds/tests. Both used 1,000 sessions,
+four 32 KiB prompts per session, a 384 KiB context and 16 mock model requests at
+once. Sixteen queued first turns were cancelled; each run completed 3,984 workload
+prompts and an additional reload-verification prompt. Every provider request
+checked history continuity and session isolation. Native PID samples exclude
+Python, inference and external tools; other host activity was not controlled.
+
+| Median across three runs | npm 0.7.1 | Development |
+| --- | ---: | ---: |
+| Native binary bytes | 3,352,784 | 3,352,912 |
+| Idle RSS | 3,952 KiB | 3,984 KiB |
+| Observed workload maximum RSS | 202,320 KiB | 83,680 KiB |
+| RSS after four turns in 1,000 sessions | 167,008 KiB | 24,992 KiB |
+| First-turn completion after fixture release | 2.796 s | 2.796 s |
+| Subsequent three turns, including phase samples | 13.777 s | 12.716 s |
+
+The median sampled maximum is **58.6% lower**; sampled memory after the workload
+is **85.0% lower**. Individual development completion samples range from 21,472 to
+85,920 KiB, so these are not fixed RSS bounds. Idle memory is slightly higher and
+the binary grows by 128 bytes. First-turn speed is unchanged at the median; later
+turns are about 7.7% faster here, with overlapping timing ranges. This does not
+establish a universal speedup or a ranking against another agent.
+
+The new defaults gate 32 root turns before expanding contexts and release idle
+transcripts above 64 KiB after saving. ACP prompt parameters and large tool-call
+arguments are moved/referenced instead of copied. Provider/auth clones share
+configuration. Completed child contexts use compact JSON under an aggregate
+per-session byte budget, independently of retained task outputs.
+
+A separate **actual 1,000-child-agent** fixture passed matching results,
+read-only/context isolation, recent-child followup, explicit older-context
+expiry, preserved results and unload checks. It creates children in batches of
+32, uses a 64 KiB retained-context budget and at most 16 simultaneous mock requests.
+This single run observed 41,632 KiB native RSS and completed in 2.158 seconds,
+including measurement holds and a 2 ms simulated child-model delay. It does not
+mean 1,000 model requests were active simultaneously.
+
+A single conservative laptop-settings run also passed 1,000 sessions with 16
+active roots, 16 model requests, 96 KiB contexts and fully cold idle history.
+Its observed maximum was 36,080 KiB, while first-turn completion took 10.809 s
+and the remaining three turns 29.854 s. Aggressive RAM limits can trade away
+throughput; tune them on your workload rather than assuming lower limits are
+always faster. Real models, terminals and browsers add separate costs.
+
+[Full samples, binary/source hashes and checks](benchmarks/macos-arm64-swarm-development.json).
+The existing release version is intentionally unchanged; installing npm 0.7.1
+does not include this development patch. Linux/Windows performance was not measured.
+The verification workflow includes the new functional regression tests on all
+six targets and small scale fixtures on macOS/Linux; adding those steps is not
+evidence of a completed remote CI run.
+
+```sh
+# Build one native process, then compare with the separately installed old binary.
+cargo build --release --locked
+python3 -B tests/scalability.py --binary /absolute/old/piko \
+  --binary target/release/piko --sessions 1000 --turns 4 \
+  --model-concurrency 16 --prompt-kib 32 --context-kib 384
+python3 -B tests/subagent_scalability.py --binary target/release/piko --agents 1000
+```
+
+Use [the laptop profile](../examples/laptop-swarm.toml) with a development binary
+and an ACP client that multiplexes sessions into one process. A thousand separate
+CLI processes or local model instances are a different workload. Limits and
+failure behavior are described in the [reference](reference.md#performance-and-memory).
+
 Version 0.3 adds lazy model discovery using the existing HTTP pool. Sessions share
 one immutable catalog; in-memory and private disk caches last five minutes.
 Discovery has a five-second deadline, a 2 MiB input limit and a 256 KiB normalized
@@ -171,6 +304,12 @@ universal savings. This fixture excludes the Python server and npm launcher.
 python3 tests/memory_benchmark.py --binary /absolute/old/piko \
   --binary /absolute/new/piko --agents 1 32 64 --prompt-kib 128
 ```
+
+For the development binary, run this held-stream fixture separately with
+`--active-turns 64`: every requested stream must be admitted before the fixture
+releases any response. Older binaries do not accept that configuration field.
+The default fixture now stops at 32 streams; use `scalability.py` to measure queued
+work above the root admission limit.
 
 [Raw samples, binary hashes, environment and live coding-task result](benchmarks/macos-arm64-0.5.0.json).
 The live task passed its independent tests and preserved an unrelated file;

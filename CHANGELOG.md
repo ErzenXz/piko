@@ -1,3 +1,17 @@
+# Unreleased
+
+- Borrow saved context instead of copying its JSON trees, and preserve durable screenshots with image-only copy-on-write. Cache immutable prefix sizes and stop counting as soon as a residency/window threshold is exceeded.
+- Share immutable turn storage with save snapshots and serialize directly through a capped 64 KiB file buffer off the event loop. Bound concurrent file work and complete history-load/picker preparation lifecycles.
+- Encode ACP output into a byte-bounded wire queue, move message payloads, batch ready writes, and clean pending permission registrations on cancellation and task abort.
+- Replace repeated mailbox scans with job-retirement events and amortized FIFO cleanup. Bound rolling output before append and release oversized result allocations.
+- Apply one global shell/PTY process limit across sessions, retaining capacity through actual worker cleanup. Reject unavailable terminal working directories instead of silently falling back to HOME.
+- Add Windows-native RSS collection and session/subagent/long-history stress reports to all six native CI targets.
+- Queue root turns before expanding context; cap queued/executing ACP prompt bytes without blocking cancellation or permission replies.
+- Release large idle transcripts after durable save and lazily restore them before use. Guard metadata saves and error paths against history loss or permanently reloaded contexts.
+- Compact completed subagent histories under an aggregate per-session byte budget, preserving task results and recent followups; report expired contexts explicitly.
+- Share provider/auth configuration, move prompt parameters and completed outputs, and execute tool batches through transcript indices instead of copying arguments.
+- Support up to 1,024 jobs per session, add a laptop swarm profile, and exercise 1,000-session and actual-subagent scaling with repeatable offline fixtures. No new runtime dependencies.
+
 # 0.7.1
 
 - Restore ordinary installation under pnpm’s no-downgrade trust policy by staging all seven packages with provenance and requiring maintainer approval before release.

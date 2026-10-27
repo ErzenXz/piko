@@ -133,20 +133,63 @@ pub fn image_dimensions(mime: &str, bytes: &[u8]) -> Option<(u32, u32)> {
 pub fn trim_images(items: &mut [Value], budget: usize) {
     let mut used = 0;
     for item in items.iter_mut().rev() {
-        if item["type"] != "function_call_output" {
-            continue;
+        trim_image_item(item, budget, &mut used);
+    }
+}
+
+pub fn trim_context_images(
+    prefix: &mut [std::borrow::Cow<'_, Value>],
+    active: &mut [Value],
+    budget: usize,
+) -> bool {
+    let mut used = 0;
+    for item in active.iter_mut().rev() {
+        trim_image_item(item, budget, &mut used);
+    }
+    let mut changed = false;
+    for item in prefix.iter_mut().rev() {
+        let mut next = used;
+        let needs_copy = item["type"] == "function_call_output"
+            && item["output"].as_array().is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .rev()
+                    .filter(|block| block["type"] == "input_image")
+                    .any(|block| {
+                        let size = block["image_url"].as_str().map_or(0, str::len);
+                        if size > budget.saturating_sub(next) {
+                            true
+                        } else {
+                            next += size;
+                            false
+                        }
+                    })
+            });
+        if needs_copy {
+            changed = true;
+            trim_image_item(item.to_mut(), budget, &mut used);
+        } else {
+            used = next;
         }
-        if let Some(blocks) = item["output"].as_array_mut() {
-            for block in blocks.iter_mut().rev() {
-                if block["type"] != "input_image" {
-                    continue;
-                }
-                let size = block["image_url"].as_str().map_or(0, str::len);
-                if used + size <= budget {
-                    used += size;
-                } else {
-                    *block = json!({"type":"input_text","text":"[Older screenshot omitted to bound context; take a fresh screenshot if needed]"});
-                }
+    }
+    changed
+}
+
+fn trim_image_item(item: &mut Value, budget: usize, used: &mut usize) {
+    if item["type"] != "function_call_output" {
+        return;
+    }
+    if let Some(blocks) = item["output"].as_array_mut() {
+        for block in blocks
+            .iter_mut()
+            .rev()
+            .filter(|block| block["type"] == "input_image")
+        {
+            let size = block["image_url"].as_str().map_or(0, str::len);
+            if size <= budget.saturating_sub(*used) {
+                *used += size;
+            } else {
+                *block = json!({"type":"input_text","text":"[Older screenshot omitted to bound context; take a fresh screenshot if needed]"});
             }
         }
     }

@@ -1,34 +1,115 @@
 //! Session-scoped, bounded mailboxes. Messages are consumed only between model steps.
 use crate::{
     agent::{AgentContext, run_agent},
-    jobs::Job,
+    jobs::{Job, JobRetirements},
     tools::string,
 };
-use anyhow::{Context, Result, bail, ensure};
-use serde_json::{Value, json};
+use anyhow::{Context, Result, ensure};
+use serde_json::{Value, json, value::RawValue};
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, Weak},
+    sync::Arc,
 };
 use tokio::sync::Mutex;
 
 #[derive(Default)]
-pub struct Mailboxes(Mutex<BTreeMap<String, Entry>>);
+pub struct Mailboxes(Mutex<MailboxState>);
+
+#[derive(Default)]
+struct MailboxState {
+    entries: BTreeMap<String, Entry>,
+    retained_bytes: usize,
+    completed: VecDeque<(u64, String)>,
+    generation: u64,
+    retired: Arc<JobRetirements>,
+}
+
+impl MailboxState {
+    fn prune(&mut self) {
+        for id in self.retired.take() {
+            if let Some(entry) = self.entries.remove(&id) {
+                self.retained_bytes -= entry.history.as_ref().map_or(0, |value| value.get().len());
+            }
+        }
+        self.compact_completed(false);
+    }
+
+    fn compact_completed(&mut self, force: bool) {
+        if self.retained_bytes == 0 {
+            self.completed.clear();
+        } else if force || self.completed.len() > self.entries.len().saturating_mul(2).max(32) {
+            // Followups invalidate their old queue node in O(1); prune those
+            // tombstones only after enough work to amortize a compaction pass.
+            self.completed.retain(|(generation, id)| {
+                self.entries.get(id).is_some_and(|entry| {
+                    entry.history.is_some() && entry.history_generation == *generation
+                })
+            });
+        }
+    }
+
+    fn take_history(&mut self, id: &str) -> Option<Box<RawValue>> {
+        let history = self.entries.get_mut(id)?.history.take()?;
+        self.retained_bytes -= history.get().len();
+        self.compact_completed(false);
+        Some(history)
+    }
+
+    // Completed contexts are compact JSON rather than allocation-heavy Value trees.
+    // Bound their aggregate encoded bytes; eviction never discards task results.
+    fn retain_history(&mut self, id: &str, history: Box<RawValue>, limit: usize) {
+        self.take_history(id);
+        let bytes = history.get().len();
+        if bytes > limit || !self.entries.contains_key(id) {
+            return;
+        }
+        while bytes > limit.saturating_sub(self.retained_bytes) {
+            let Some((generation, oldest)) = self.completed.pop_front() else {
+                break;
+            };
+            if let Some(entry) = self.entries.get_mut(&oldest)
+                && entry.history_generation == generation
+                && let Some(expired) = entry.history.take()
+            {
+                self.retained_bytes -= expired.get().len();
+            }
+        }
+        if self.generation == u64::MAX {
+            self.compact_completed(true);
+            for (index, (generation, id)) in self.completed.iter_mut().enumerate() {
+                *generation = index as u64 + 1;
+                self.entries
+                    .get_mut(id)
+                    .expect("retained mailbox")
+                    .history_generation = *generation;
+            }
+            self.generation = self.completed.len() as u64;
+        }
+        self.generation += 1;
+        let entry = self.entries.get_mut(id).expect("registered mailbox");
+        entry.history = Some(history);
+        entry.history_generation = self.generation;
+        self.retained_bytes += bytes;
+        self.completed.push_back((self.generation, id.into()));
+        self.compact_completed(false);
+    }
+}
 struct Entry {
     parent: Option<String>,
     read_only: bool,
     depth: usize,
     model: String,
     reasoning: Option<String>,
-    job: Weak<Job>,
     pending: VecDeque<String>,
-    history: Option<Vec<Value>>,
+    history: Option<Box<RawValue>>,
+    history_generation: u64,
     accepting: bool,
 }
 impl Mailboxes {
     pub async fn drain(&self, id: Option<&str>) -> Vec<Value> {
-        let mut entries = self.0.lock().await;
-        let Some(entry) = entries.get_mut(id.unwrap_or("")) else {
+        let mut state = self.0.lock().await;
+        state.prune();
+        let Some(entry) = state.entries.get_mut(id.unwrap_or("")) else {
             return vec![];
         };
         entry
@@ -38,8 +119,9 @@ impl Mailboxes {
             .collect()
     }
     pub async fn finish_messages(&self, id: Option<&str>) -> Vec<Value> {
-        let mut entries = self.0.lock().await;
-        let Some(entry) = entries.get_mut(id.unwrap_or("")) else {
+        let mut state = self.0.lock().await;
+        state.prune();
+        let Some(entry) = state.entries.get_mut(id.unwrap_or("")) else {
             return vec![];
         };
         if entry.pending.is_empty() {
@@ -52,9 +134,10 @@ impl Mailboxes {
             .collect()
     }
     async fn register(&self, ctx: &AgentContext, job: &Arc<Job>) {
-        let mut entries = self.0.lock().await;
-        entries.retain(|_, e| e.job.strong_count() > 0);
-        entries.insert(
+        let mut state = self.0.lock().await;
+        state.prune();
+        job.retire_to(state.retired.clone());
+        state.entries.insert(
             job.id.clone(),
             Entry {
                 parent: job.parent.clone(),
@@ -62,9 +145,9 @@ impl Mailboxes {
                 depth: ctx.depth,
                 model: ctx.model.clone(),
                 reasoning: ctx.reasoning_effort.clone(),
-                job: Arc::downgrade(job),
                 pending: VecDeque::new(),
                 history: None,
+                history_generation: 0,
                 accepting: true,
             },
         );
@@ -156,16 +239,32 @@ fn launch(
             }
         };
         // Retain complete exchanges only. Interrupted calls must never be replayed.
-        crate::protocol::repair_calls(&mut items);
-        if let Some(entry) = child.mailboxes.0.lock().await.get_mut(&task.id) {
-            entry.accepting = false;
-            if !entry.pending.is_empty() {
-                output = format!(
-                    "{} queued messages were not consumed before this task stopped; use followup_agent to continue.\n{output}",
-                    entry.pending.len()
-                );
+        // Cancelled children cannot resume, so release their contexts immediately.
+        let history = if child.cancel.is_cancelled() {
+            None
+        } else {
+            crate::protocol::repair_calls(&mut items);
+            serde_json::value::to_raw_value(&items).ok()
+        };
+        drop(items);
+        {
+            let mut state = child.mailboxes.0.lock().await;
+            state.prune();
+            if let Some(entry) = state.entries.get_mut(&task.id) {
+                entry.accepting = false;
+                if !entry.pending.is_empty() {
+                    output = format!(
+                        "{} queued messages were not consumed before this task stopped; use followup_agent to continue.\n{output}",
+                        entry.pending.len()
+                    );
+                }
+                if child.cancel.is_cancelled() {
+                    entry.pending.clear();
+                }
             }
-            entry.history = Some(items);
+            if let Some(history) = history {
+                state.retain_history(&task.id, history, child.config.retained_agent_context_bytes);
+            }
         }
         task.finish(status, output, None, child.config.tool_output_bytes)
             .await;
@@ -206,8 +305,10 @@ pub async fn message(ctx: &AgentContext, args: &Value, follow_up: bool) -> Resul
     } else {
         None
     };
-    let mut entries = ctx.mailboxes.0.lock().await;
-    let entry = entries
+    let mut state = ctx.mailboxes.0.lock().await;
+    state.prune();
+    let entry = state
+        .entries
         .get_mut(id)
         .context("Agent context was evicted; spawn a new agent")?;
     ensure!(
@@ -223,22 +324,21 @@ pub async fn message(ctx: &AgentContext, args: &Value, follow_up: bool) -> Resul
             job.state.lock().await.status != "running",
             "Agent is running; use message_agent"
         );
-        let mut items = entry
-            .history
-            .take()
-            .context("Agent is still finishing; retry shortly")?;
+        let history = entry.history.as_ref().context(
+            "Agent context expired under the retained context budget; collect task_status and spawn a new agent with a summary",
+        )?;
         let next = json!({"role":"user","content":message});
         let pending_bytes: usize = entry
             .pending
             .iter()
             .map(|message| message.len().saturating_mul(6))
             .sum();
-        if crate::session::json_bytes(&items)? + crate::session::json_bytes(&next)? + pending_bytes
-            > ctx.config.context_bytes / 2
-        {
-            entry.history = Some(items);
-            bail!("Agent context is full; spawn a new agent with a summary");
-        }
+        ensure!(
+            history.get().len() + crate::session::json_bytes(&next)? + pending_bytes
+                <= ctx.config.context_bytes / 2,
+            "Agent context is full; spawn a new agent with a summary"
+        );
+        let mut items: Vec<Value> = serde_json::from_str(history.get())?;
         items.extend(
             entry
                 .pending
@@ -255,13 +355,14 @@ pub async fn message(ctx: &AgentContext, args: &Value, follow_up: bool) -> Resul
         child.cancel = job.cancel.clone();
         entry.accepting = true;
         {
-            let mut state = job.state.lock().await;
-            state.status = "running".into();
-            state.output.clear();
-            state.exit_code = None;
-            state.truncated = false;
+            let mut job_state = job.state.lock().await;
+            job_state.status = "running".into();
+            job_state.output.clear();
+            job_state.exit_code = None;
+            job_state.truncated = false;
         }
-        drop(entries);
+        state.take_history(id);
+        drop(state);
         launch(
             child,
             job,
@@ -296,33 +397,208 @@ mod tests {
             depth: 1,
             model: "model".into(),
             reasoning: None,
-            job: Weak::new(),
             pending: VecDeque::new(),
             history: None,
+            history_generation: 0,
             accepting: true,
         }
+    }
+
+    fn history(text: &str) -> Box<RawValue> {
+        serde_json::value::to_raw_value(&vec![json!({"role":"user","content":text})]).unwrap()
+    }
+
+    #[test]
+    fn completed_context_budget_evicts_oldest_and_preserves_newest() {
+        let mut state = MailboxState::default();
+        let bytes = history("task").get().len();
+        for index in 0..1000 {
+            let id = index.to_string();
+            state.entries.insert(id.clone(), entry());
+            state.retain_history(&id, history("task"), bytes * 3);
+            assert!(state.retained_bytes <= bytes * 3);
+            assert!(state.completed.len() <= 3);
+        }
+        assert_eq!(state.retained_bytes, bytes * 3);
+        assert_eq!(
+            state
+                .completed
+                .iter()
+                .map(|(_, id)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["997", "998", "999"]
+        );
+        assert!(state.entries["0"].history.is_none());
+        assert_eq!(
+            serde_json::from_str::<Vec<Value>>(
+                state.entries["999"].history.as_ref().unwrap().get()
+            )
+            .unwrap(),
+            vec![json!({"role":"user","content":"task"})],
+        );
+        // Metadata and the independently stored task result survive expiration.
+        assert_eq!(state.entries.len(), 1000);
+    }
+
+    #[test]
+    fn replacing_taking_and_oversized_contexts_account_exactly_once() {
+        let mut state = MailboxState::default();
+        state.entries.insert("child".into(), entry());
+        let first = history("first");
+        state.retain_history("child", first, 1024);
+        let second = history("second");
+        let second_bytes = second.get().len();
+        state.retain_history("child", second, 1024);
+        assert_eq!(state.retained_bytes, second_bytes);
+        assert_eq!(state.completed.len(), 1);
+        assert!(state.take_history("child").is_some());
+        assert!(state.take_history("child").is_none());
+        assert_eq!(state.retained_bytes, 0);
+        assert!(state.completed.is_empty());
+        state.retain_history("child", history(&"x".repeat(1024)), 64);
+        assert!(state.entries["child"].history.is_none());
+        assert_eq!(state.retained_bytes, 0);
+        state.retain_history("missing", history("unused"), 1024);
+        assert_eq!(state.retained_bytes, 0);
+    }
+
+    #[test]
+    fn repeated_followups_keep_fifo_order_and_bound_queue_tombstones() {
+        let mut state = MailboxState::default();
+        let bytes = history("task").get().len();
+        for id in ["oldest", "resumed", "newest"] {
+            state.entries.insert(id.into(), entry());
+        }
+        state.retain_history("oldest", history("task"), bytes * 2);
+        state.retain_history("resumed", history("task"), bytes * 2);
+        for _ in 0..1000 {
+            assert!(state.take_history("resumed").is_some());
+            state.retain_history("resumed", history("task"), bytes * 2);
+            assert!(state.completed.len() <= 32);
+            assert!(state.entries["oldest"].history.is_some());
+            assert_eq!(state.retained_bytes, bytes * 2);
+        }
+        state.retain_history("newest", history("task"), bytes * 2);
+        assert!(state.entries["oldest"].history.is_none());
+        assert!(state.entries["resumed"].history.is_some());
+        assert!(state.entries["newest"].history.is_some());
+        assert_eq!(state.retained_bytes, bytes * 2);
+    }
+
+    #[test]
+    fn completion_generation_wrap_preserves_recent_contexts() {
+        let mut state = MailboxState::default();
+        let bytes = history("task").get().len();
+        for id in ["one", "two", "three"] {
+            state.entries.insert(id.into(), entry());
+        }
+        state.retain_history("one", history("task"), bytes * 2);
+        state.retain_history("two", history("task"), bytes * 2);
+        state.generation = u64::MAX;
+        state.retain_history("one", history("task"), bytes * 2);
+        state.retain_history("three", history("task"), bytes * 2);
+        assert!(state.entries["one"].history.is_some());
+        assert!(state.entries["two"].history.is_none());
+        assert!(state.entries["three"].history.is_some());
+        assert_eq!(state.retained_bytes, bytes * 2);
+    }
+
+    #[tokio::test]
+    async fn retirement_reclaims_only_destroyed_jobs_without_scanning_live_siblings() {
+        let jobs = crate::jobs::Jobs::new(1024, 1024);
+        let mut state = MailboxState::default();
+        let bytes = history("task").get().len();
+        let mut held = Vec::new();
+        for index in 0..1000 {
+            let job = jobs
+                .reserve("agent", None, tokio_util::sync::CancellationToken::new())
+                .await
+                .unwrap();
+            job.retire_to(state.retired.clone());
+            state.entries.insert(job.id.clone(), entry());
+            state.retain_history(&job.id, history("task"), bytes * 1000);
+            if index % 2 == 0 {
+                held.push(job);
+            }
+        }
+        state.prune();
+        assert_eq!(state.entries.len(), 1000);
+        assert_eq!(state.retained_bytes, bytes * 1000);
+        drop(jobs);
+        state.prune();
+        assert_eq!(state.entries.len(), 500);
+        assert_eq!(state.retained_bytes, bytes * 500);
+        assert!(held.iter().all(|job| state.entries.contains_key(&job.id)));
+        state.prune();
+        assert_eq!(state.entries.len(), 500);
+        drop(held);
+        state.prune();
+        assert!(state.entries.is_empty());
+        assert!(state.completed.is_empty());
+        assert_eq!(state.retained_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn draining_prunes_evicted_job_context_without_another_spawn() {
+        let jobs = crate::jobs::Jobs::new(1, 1024);
+        let job = jobs
+            .reserve("agent", None, tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap();
+        let boxes = Mailboxes::default();
+        let target = entry();
+        {
+            let mut state = boxes.0.lock().await;
+            job.retire_to(state.retired.clone());
+            state.entries.insert(job.id.clone(), target);
+            state.retain_history(&job.id, history("retained"), 1024);
+        }
+        job.finish("completed", "result".into(), None, 1024).await;
+        drop(job);
+        // A shell task can evict the completed agent without calling register.
+        jobs.reserve("shell", None, tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap();
+        boxes.drain(None).await;
+        let state = boxes.0.lock().await;
+        assert!(state.entries.is_empty());
+        assert_eq!(state.retained_bytes, 0);
+        assert!(state.completed.is_empty());
     }
 
     #[tokio::test]
     async fn steering_winning_final_drain_remains_deliverable() {
         let boxes = Mailboxes::default();
+        let jobs = crate::jobs::Jobs::new(1, 1024);
+        let job = jobs
+            .reserve("agent", None, tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap();
         let mut target = entry();
+        job.retire_to(boxes.0.lock().await.retired.clone());
         target.pending.push_back("finish this too".into());
-        boxes.0.lock().await.insert("child".into(), target);
+        boxes.0.lock().await.entries.insert("child".into(), target);
         let delivered = boxes.finish_messages(Some("child")).await;
         assert_eq!(
             delivered,
             vec![json!({"role":"user","content":"finish this too"})]
         );
-        assert!(boxes.0.lock().await["child"].accepting);
+        assert!(boxes.0.lock().await.entries["child"].accepting);
         assert!(boxes.finish_messages(Some("child")).await.is_empty());
-        assert!(!boxes.0.lock().await["child"].accepting);
+        assert!(!boxes.0.lock().await.entries["child"].accepting);
     }
 
     #[tokio::test]
     async fn final_drain_closes_mailbox_before_waiting_sender_can_accept() {
         let boxes = Arc::new(Mailboxes::default());
-        boxes.0.lock().await.insert("child".into(), entry());
+        let jobs = crate::jobs::Jobs::new(1, 1024);
+        let job = jobs
+            .reserve("agent", None, tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap();
+        let target = entry();
+        job.retire_to(boxes.0.lock().await.retired.clone());
+        boxes.0.lock().await.entries.insert("child".into(), target);
         // Hold the mailbox so the final drain queues before the concurrent sender.
         let held = boxes.0.lock().await;
         let finishing = boxes.clone();
@@ -335,7 +611,7 @@ mod tests {
         let sending = boxes.clone();
         let sender = tokio::spawn(async move {
             let mut entries = sending.0.lock().await;
-            let target = entries.get_mut("child").unwrap();
+            let target = entries.entries.get_mut("child").unwrap();
             if target.accepting {
                 target.pending.push_back("late steering".into());
                 true
@@ -349,7 +625,7 @@ mod tests {
             !sender.await.unwrap(),
             "A sender after final drain must retry as a follow-up"
         );
-        assert!(boxes.0.lock().await["child"].pending.is_empty());
+        assert!(boxes.0.lock().await.entries["child"].pending.is_empty());
     }
 
     #[tokio::test]

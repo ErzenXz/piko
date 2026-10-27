@@ -24,10 +24,11 @@ from stdio import Harness, final
 
 
 class HeldStreams(Harness):
-    def __init__(self, agents, context_bytes):
+    def __init__(self, agents, context_bytes, active_turns=0):
         super().__init__(None, extra=(
             f"max_sessions = {agents}\nmax_model_requests = {agents}\n"
             f"context_bytes = {context_bytes}\nrequest_timeout_secs = 60\n"
+            + (f"max_active_turns = {active_turns}\n" if active_turns else "")
         ))
         self.expected = agents
         self.received = 0
@@ -112,7 +113,41 @@ async def memory(pid):
         if process.returncode:
             raise RuntimeError(stderr.decode())
         return {"VmRSS": int(stdout.strip())}
-    raise RuntimeError("RSS collection supports macOS ps and Linux /proc")
+    if os.name == "nt":
+        return windows_memory(pid)
+    raise RuntimeError("RSS collection supports macOS, Windows and Linux")
+
+
+def windows_memory(pid):
+    """Native working set counters, no psutil/helper install (Windows 7+ API)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+            (field, ctypes.c_size_t) for field in (
+                "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage",
+                "PagefileUsage", "PeakPagefileUsage")]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessMemoryCounters), wintypes.DWORD]
+    kernel.K32GetProcessMemoryInfo.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        if not kernel.K32GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return {"VmRSS": counters.WorkingSetSize // 1024, "VmHWM": counters.PeakWorkingSetSize // 1024}
+    finally:
+        kernel.CloseHandle(handle)
 
 
 async def samples(pid, count, interval):
@@ -138,11 +173,11 @@ def binary_metadata(binary):
             "bytes": binary.stat().st_size, "sha256": digest.hexdigest()}
 
 
-async def benchmark(binary, agents, prompt_bytes, context_bytes, count, interval):
+async def benchmark(binary, agents, prompt_bytes, context_bytes, count, interval, active_turns=0):
     # Harness consults this module constant when starting each subprocess. Runs
     # are sequential, giving both binaries exactly the same server and workload.
     stdio.BINARY = binary
-    async with HeldStreams(agents, context_bytes) as harness:
+    async with HeldStreams(agents, context_bytes, active_turns) as harness:
         await harness.initialize()
         pid = harness.process.pid
         idle = await samples(pid, count, interval)
@@ -204,7 +239,7 @@ async def main(args):
         runs = []
         for agents in args.agents:
             runs.append(await benchmark(binary, agents, args.prompt_kib * 1024,
-                                        args.context_kib * 1024, args.samples, args.interval))
+                                        args.context_kib * 1024, args.samples, args.interval, args.active_turns))
         results.append({"binary": binary_metadata(binary), "runs": runs})
     return {
         "scope": "Synthetic loopback SSE allocation fixture. Native PID RSS only; excludes model inference and Python fixture memory. Not a real-model or intelligence benchmark.",
@@ -219,7 +254,9 @@ async def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, action="append", required=True)
-    parser.add_argument("--agents", type=int, nargs="+", default=[1, 32, 64])
+    parser.add_argument("--agents", type=int, nargs="+", default=[1, 16, 32])
+    parser.add_argument("--active-turns", type=int, default=0,
+                        help="New binaries: set at least the largest agents count for this all-streams-held fixture")
     parser.add_argument("--prompt-kib", type=int, default=128)
     parser.add_argument("--context-kib", type=int, default=384)
     parser.add_argument("--samples", type=int, default=12)
@@ -228,6 +265,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if any(not 1 <= value <= 1024 for value in args.agents):
         parser.error("agents must be 1..1024")
+    if args.active_turns and not max(args.agents) <= args.active_turns <= 1024:
+        parser.error("active-turns must be at least the largest agents count and <=1024")
     if not 16 <= args.context_kib <= 4096 or not 1 <= args.prompt_kib < args.context_kib / 2:
         parser.error("context must be 16..4096 KiB and prompt must fit below half of it")
     if not 1 <= args.samples <= 100 or not 0.01 <= args.interval <= 1:

@@ -1,20 +1,62 @@
-use crate::{auth::Auth, config::Config, metrics::Metrics, protocol::Peer};
+use crate::{
+    auth::Auth,
+    config::Config,
+    metrics::Metrics,
+    protocol::Peer,
+    provider_options::{Options, Profile},
+    retry::{self, RetryDecision},
+};
 use anyhow::{Context, Result, bail, ensure};
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Serialize, ser::SerializeSeq};
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 const MAX_EVENT: usize = 4 * 1024 * 1024;
+
+/// One wire array over borrowed saved exchanges and an owned active turn.
+#[derive(Clone, Copy)]
+pub struct Input<'a> {
+    pub prefix: &'a [Cow<'a, Value>],
+    pub active: &'a [Value],
+}
+
+impl<'a> Input<'a> {
+    pub fn plain(active: &'a [Value]) -> Self {
+        Self {
+            prefix: &[],
+            active,
+        }
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &Value> {
+        self.prefix
+            .iter()
+            .map(Cow::as_ref)
+            .chain(self.active.iter())
+    }
+}
+
+impl Serialize for Input<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.prefix.len() + self.active.len()))?;
+        for item in self.iter() {
+            seq.serialize_element(item)?;
+        }
+        seq.end()
+    }
+}
 
 // Borrow conversation values until serialization; retries share the encoded body bytes.
 #[derive(Serialize)]
 struct ResponsesRequest<'a> {
     model: &'a str,
     instructions: &'a str,
-    input: &'a [Value],
+    input: Input<'a>,
     tools: &'a serde_json::value::RawValue,
     stream: bool,
     store: bool,
@@ -27,8 +69,8 @@ struct ResponsesRequest<'a> {
     reasoning: Option<Reasoning<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt_cache_retention: Option<&'a str>,
+    #[serde(flatten)]
+    options: Options<'a>,
 }
 
 #[derive(Serialize)]
@@ -36,27 +78,10 @@ struct Reasoning<'a> {
     effort: &'a str,
 }
 
-fn retryable_status(status: reqwest::StatusCode) -> bool {
-    matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)
-}
-
-fn retry_delay(header: Option<&reqwest::header::HeaderValue>, attempt: u32) -> Result<Duration> {
-    let seconds = match header {
-        Some(header) => header
-            .to_str()
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .filter(|seconds| *seconds <= 30)
-            .context("Provider requested a later retry; wait for its Retry-After interval before trying again")?,
-        None => 1 << attempt.min(3),
-    };
-    Ok(Duration::from_secs(seconds))
-}
-
 #[derive(Clone)]
 pub struct Provider {
     client: reqwest::Client,
-    config: Config,
+    config: Arc<Config>,
     auth: Auth,
     catalog: Arc<crate::models::Catalog>,
     requests: Arc<Semaphore>,
@@ -94,7 +119,7 @@ impl Provider {
                 .redirect(reqwest::redirect::Policy::none())
                 .pool_max_idle_per_host(config.max_model_requests.min(256))
                 .build()?,
-            config: config.clone(),
+            config: Arc::new(config.clone()),
             auth: Auth::new(config),
             catalog: Arc::new(crate::models::Catalog::default()),
             requests: Arc::new(Semaphore::new(config.max_model_requests)),
@@ -108,7 +133,7 @@ impl Provider {
         model: &str,
         reasoning_effort: Option<&str>,
         instructions: &str,
-        input: &[Value],
+        input: Input<'_>,
         tools: &[Value],
         encoded_tools: Option<&serde_json::value::RawValue>,
         peer: &Peer,
@@ -125,7 +150,7 @@ impl Provider {
             _ = cancel.cancelled() => bail!("Cancelled"),
             result = tokio::time::timeout_at(deadline, self.respond_inner(
                 model, reasoning_effort, instructions, input, tools, encoded_tools, peer,
-                session_id, agent_id, cancel,
+                session_id, agent_id, cancel, deadline,
             )) => result.context("Model request deadline exceeded; retry when ready")?,
         }
     }
@@ -136,13 +161,14 @@ impl Provider {
         model: &str,
         reasoning_effort: Option<&str>,
         instructions: &str,
-        input: &[Value],
+        input: Input<'_>,
         tools: &[Value],
         encoded_tools: Option<&serde_json::value::RawValue>,
         peer: &Peer,
         session_id: &str,
         agent_id: Option<&str>,
         cancel: &CancellationToken,
+        deadline: tokio::time::Instant,
     ) -> Result<Response> {
         let _permit = tokio::select! {
             _ = cancel.cancelled() => bail!("Cancelled"),
@@ -150,13 +176,16 @@ impl Provider {
         };
         let chat = self.config.wire_api == "chat_completions";
         let mut credentials = self.auth.credentials(&self.client, false).await?;
-        let cached = credentials.account_id.is_some()
-            || credentials.base_url.trim_end_matches('/') == "https://api.openai.com/v1";
-        // Keep the established cache namespace across the Piko rename.
-        let cache_key = cached.then(|| format!("harness-v1:{session_id}"));
-        let retention = (cached && credentials.account_id.is_none())
-            .then_some(self.config.prompt_cache_retention.as_deref())
-            .flatten();
+        let profile = Profile::resolve(
+            &self.config,
+            &credentials.base_url,
+            credentials.account_id.is_some(),
+        );
+        let options = profile.options(&self.config, model)?;
+        // Preserve the established namespace; children get their own stable routing key.
+        let affinity = format!("harness-v1:{}", agent_id.unwrap_or(session_id));
+        let cache_key =
+            matches!(profile, Profile::OpenAi | Profile::Subscription).then_some(affinity.as_str());
         let fallback_tools;
         let encoded_tools = match encoded_tools {
             Some(encoded) => encoded,
@@ -166,7 +195,7 @@ impl Provider {
             }
         };
         let body = if chat {
-            let mut body = chat_request(
+            let mut body = chat_request_view(
                 model,
                 instructions,
                 input,
@@ -179,8 +208,10 @@ impl Provider {
             if let Some(key) = &cache_key {
                 body["prompt_cache_key"] = json!(key);
             }
-            if let Some(retention) = retention {
-                body["prompt_cache_retention"] = json!(retention);
+            if let Value::Object(extra) = serde_json::to_value(&options)? {
+                body.as_object_mut()
+                    .expect("chat request object")
+                    .extend(extra);
             }
             serde_json::to_vec(&body)?
         } else {
@@ -199,8 +230,8 @@ impl Provider {
                     .then_some(self.config.max_output_tokens),
                 include: ["reasoning.encrypted_content"],
                 reasoning: reasoning_effort.map(|effort| Reasoning { effort }),
-                prompt_cache_key: cache_key.as_deref(),
-                prompt_cache_retention: retention,
+                prompt_cache_key: cache_key,
+                options,
             })?
         };
         let endpoint = if chat {
@@ -208,7 +239,7 @@ impl Provider {
         } else {
             "responses"
         };
-        let template = self
+        let mut template = self
             .client
             .post(format!(
                 "{}/{endpoint}",
@@ -217,6 +248,9 @@ impl Provider {
             .header("Accept", "text/event-stream")
             .header("Content-Type", "application/json")
             .body(body);
+        if profile == Profile::OpenRouter {
+            template = template.header("x-session-id", &affinity);
+        }
         let mut attempt = 0;
         let mut refreshed = false;
         let response = loop {
@@ -241,9 +275,16 @@ impl Provider {
                 Err(error) => {
                     // No response bytes reached the executor. Never retry this loop
                     // after stream consumption begins, and never replay agent tools.
-                    let transient = error.is_connect() || error.is_timeout() || error.is_request();
-                    if transient && attempt < 3 {
-                        let delay = retry_delay(None, attempt)?;
+                    let transient = error.is_connect() || error.is_timeout();
+                    if let Some(delay) = transient
+                        .then(|| {
+                            retry::transport_retry_delay(
+                                attempt,
+                                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                            )
+                        })
+                        .flatten()
+                    {
                         attempt += 1;
                         tokio::select! {
                             _ = cancel.cancelled() => bail!("Cancelled"),
@@ -269,19 +310,47 @@ impl Provider {
                 refreshed = true;
                 continue;
             }
-            if retryable_status(status) && attempt < 3 {
-                let delay = retry_delay(response.headers().get("retry-after"), attempt)?;
-                drop(response);
-                attempt += 1;
-                tokio::select! {
-                    _ = cancel.cancelled() => bail!("Cancelled"),
-                    _ = tokio::time::sleep(delay) => {}
+            let headers = response.headers().clone();
+            // Read only a small error envelope; never retain or expose echoed prompts.
+            let mut error_body = Vec::new();
+            let mut errors = response.bytes_stream();
+            while let Some(chunk) = errors.next().await {
+                let Ok(chunk) = chunk else { break };
+                let remaining = (8 * 1024usize).saturating_sub(error_body.len());
+                error_body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                if chunk.len() >= remaining {
+                    break;
                 }
-                continue;
+            }
+            match retry::response_retry(
+                status,
+                &headers,
+                &error_body,
+                attempt,
+                std::time::SystemTime::now(),
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+            ) {
+                RetryDecision::RetryAfter(delay) => {
+                    attempt += 1;
+                    tokio::select! {
+                        _ = cancel.cancelled() => bail!("Cancelled"),
+                        _ = tokio::time::sleep(delay) => {}
+                    }
+                    continue;
+                }
+                RetryDecision::RetryLater => bail!(
+                    "Provider requested a later retry; wait for its Retry-After interval before trying again"
+                ),
+                RetryDecision::Stop => {}
+            }
+            if retry::terminal_quota_error(&error_body) {
+                bail!(
+                    "Provider quota or billing limit reached; check the account allowance before retrying"
+                );
             }
             // Do not forward arbitrary upstream bodies: they may echo sensitive input.
             bail!(
-                "Provider returned HTTP {} (check credentials, model, quota, and endpoint)",
+                "Provider returned HTTP {} (check credentials, model, service tier, cache settings, quota, and endpoint)",
                 status.as_u16()
             );
         };
@@ -305,6 +374,7 @@ impl Provider {
         let mut text = String::new();
         let mut chat_stream = ChatStream::with_limit(self.config.context_bytes);
         let mut chat_usage = None;
+        let mut actual_tier: Option<String> = None;
         while let Some(chunk) = tokio::select! {
             biased;
             _ = cancel.cancelled() => bail!("Cancelled"),
@@ -315,15 +385,24 @@ impl Provider {
             })?)? {
                 if data == "[DONE]" {
                     if chat {
-                        self.emit_usage(peer, session_id, agent_id, chat_usage.as_ref())
-                            .await?;
+                        self.emit_usage(
+                            peer,
+                            session_id,
+                            agent_id,
+                            chat_usage.as_ref(),
+                            actual_tier.as_deref(),
+                        )
+                        .await?;
                         return chat_stream.finish(text);
                     }
                     continue;
                 }
                 let mut event: Value =
-                    serde_json::from_str(&data).context("Invalid OpenAI SSE JSON")?;
+                    serde_json::from_str(&data).context("Invalid provider SSE JSON")?;
                 if chat {
+                    if let Some(tier) = event["service_tier"].as_str().filter(|s| s.len() <= 64) {
+                        actual_tier = Some(tier.to_owned());
+                    }
                     if event["usage"].is_object() {
                         chat_usage = Some(event["usage"].clone());
                     }
@@ -356,8 +435,14 @@ impl Provider {
                     }
                     "response.completed" | "response.incomplete" => {
                         let response = &event["response"];
-                        self.emit_usage(peer, session_id, agent_id, response.get("usage"))
-                            .await?;
+                        self.emit_usage(
+                            peer,
+                            session_id,
+                            agent_id,
+                            response.get("usage"),
+                            response["service_tier"].as_str(),
+                        )
+                        .await?;
                         let output = response["output"]
                             .as_array()
                             .context("Missing response output")?;
@@ -387,12 +472,25 @@ impl Provider {
                             incomplete,
                         });
                     }
-                    "response.failed" | "error" => bail!("OpenAI stream reported an error"),
+                    "response.failed" | "error" => bail!("Provider stream reported an error"),
                     _ => {}
                 }
             }
         }
-        bail!("OpenAI stream ended before a completed response; no tools were executed")
+        // Compatible providers sometimes close cleanly after an explicit finish marker.
+        // A transport error or missing finish marker still fails, with no tool execution.
+        if chat && chat_stream.finish.is_some() {
+            self.emit_usage(
+                peer,
+                session_id,
+                agent_id,
+                chat_usage.as_ref(),
+                actual_tier.as_deref(),
+            )
+            .await?;
+            return chat_stream.finish(text);
+        }
+        bail!("Provider stream ended before a completed response; no tools were executed")
     }
 
     async fn emit_usage(
@@ -401,8 +499,14 @@ impl Provider {
         session: &str,
         agent: Option<&str>,
         usage: Option<&Value>,
+        service_tier: Option<&str>,
     ) -> Result<()> {
-        if let Some(usage) = usage.and_then(|usage| self.metrics.record(usage)) {
+        if let Some(mut usage) = usage.and_then(|usage| self.metrics.record(usage)) {
+            if let Some(tier) =
+                service_tier.filter(|s| s.len() <= 64 && !s.chars().any(char::is_control))
+            {
+                usage["serviceTier"] = json!(tier);
+            }
             peer.send(json!({"jsonrpc":"2.0","method":"_harness/usage","params":{"sessionId":session,"agentId":agent,"usage":usage}})).await?;
         }
         Ok(())
@@ -429,9 +533,19 @@ pub fn chat_request(
     tools: &[Value],
     max_tokens: u32,
 ) -> Result<Value> {
+    chat_request_view(model, instructions, Input::plain(input), tools, max_tokens)
+}
+
+fn chat_request_view(
+    model: &str,
+    instructions: &str,
+    input: Input<'_>,
+    tools: &[Value],
+    max_tokens: u32,
+) -> Result<Value> {
     let mut messages = vec![json!({"role":"system", "content":instructions})];
     let mut images = Vec::new();
-    for item in input {
+    for item in input.iter() {
         if (item["type"] == "function_call" || item["role"].is_string()) && !images.is_empty() {
             messages.push(json!({"role":"user","content":std::mem::take(&mut images)}));
         }
@@ -511,6 +625,10 @@ impl ChatStream {
         let Some(choice) = event["choices"].as_array().and_then(|c| c.first()) else {
             return Ok(None);
         };
+        ensure!(
+            self.finish.is_none(),
+            "Provider sent choices after the stream finish marker"
+        );
         if let Some(reason) = choice["finish_reason"].as_str() {
             self.finish = Some(reason.into());
         }
@@ -556,6 +674,12 @@ impl ChatStream {
         let reason = self
             .finish
             .context("Chat stream ended without a finish reason")?;
+        if ["stop", "tool_calls"].contains(&reason.as_str()) {
+            ensure!(
+                (reason == "tool_calls") != self.calls.is_empty(),
+                "Provider finish reason does not match its tool calls"
+            );
+        }
         let mut output = Vec::new();
         if !text.is_empty() {
             output.push(json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":text}],"phase":"final_answer"}));
@@ -720,7 +844,7 @@ mod tests {
         let mut request = ResponsesRequest {
             model: "model",
             instructions: "instructions",
-            input: &input,
+            input: Input::plain(&input),
             tools: &encoded,
             stream: true,
             store: false,
@@ -730,9 +854,12 @@ mod tests {
             include: ["reasoning.encrypted_content"],
             reasoning: Some(Reasoning { effort: "high" }),
             prompt_cache_key: Some("harness-v1:session"),
-            prompt_cache_retention: Some("24h"),
+            options: Options {
+                prompt_cache_retention: Some("24h"),
+                ..Options::default()
+            },
         };
-        assert!(std::ptr::eq(request.input.as_ptr(), input.as_ptr()));
+        assert!(std::ptr::eq(request.input.active.as_ptr(), input.as_ptr()));
         assert!(std::ptr::eq(request.tools, encoded.as_ref()));
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["input"], json!(input));
@@ -743,7 +870,7 @@ mod tests {
         request.max_output_tokens = None;
         request.reasoning = None;
         request.prompt_cache_key = None;
-        request.prompt_cache_retention = None;
+        request.options.prompt_cache_retention = None;
         let value = serde_json::to_value(&request).unwrap();
         for key in [
             "max_output_tokens",
@@ -752,32 +879,6 @@ mod tests {
             "prompt_cache_retention",
         ] {
             assert!(value.get(key).is_none());
-        }
-    }
-
-    #[test]
-    fn retry_policy_preserves_server_delay_and_rejects_long_or_date_advice() {
-        for status in [408, 429, 500, 502, 503, 504] {
-            assert!(retryable_status(
-                reqwest::StatusCode::from_u16(status).unwrap()
-            ));
-        }
-        for status in [400, 401, 403, 404, 501, 505] {
-            assert!(!retryable_status(
-                reqwest::StatusCode::from_u16(status).unwrap()
-            ));
-        }
-        assert_eq!(retry_delay(None, 2).unwrap(), Duration::from_secs(4));
-        for seconds in [0, 1, 30] {
-            let header = reqwest::header::HeaderValue::from_str(&seconds.to_string()).unwrap();
-            assert_eq!(
-                retry_delay(Some(&header), 0).unwrap(),
-                Duration::from_secs(seconds)
-            );
-        }
-        for value in ["31", "90", "Wed, 21 Oct 2026 07:28:00 GMT", "invalid"] {
-            let header = reqwest::header::HeaderValue::from_str(value).unwrap();
-            assert!(retry_delay(Some(&header), 0).is_err());
         }
     }
 
@@ -834,7 +935,7 @@ mod tests {
                 "model",
                 None,
                 "instructions",
-                &[],
+                Input::plain(&[]),
                 &[],
                 None,
                 &peer,

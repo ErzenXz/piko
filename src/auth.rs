@@ -22,7 +22,7 @@ pub const CHATGPT_BASE: &str = "https://chatgpt.com/backend-api/codex";
 
 #[derive(Clone)]
 pub struct Auth {
-    config: Config,
+    config: Arc<Config>,
     refresh: Arc<Mutex<Option<Value>>>,
     selected: Arc<AtomicU8>,
 }
@@ -36,7 +36,7 @@ pub struct Credentials {
 impl Auth {
     pub fn new(config: &Config) -> Self {
         Self {
-            config: config.clone(),
+            config: Arc::new(config.clone()),
             refresh: Arc::new(Mutex::new(None)),
             selected: Arc::new(AtomicU8::new(match config.auth.as_str() {
                 "chatgpt" => 1,

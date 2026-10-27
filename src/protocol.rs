@@ -16,7 +16,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -50,32 +50,122 @@ fn selection<'a>(params: &'a Value, key: &str) -> Result<&'a str> {
         .ok_or_else(|| InvalidParams("Missing or invalid selection parameter").into())
 }
 
+const WIRE_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+const WIRE_BATCH_BYTES: usize = 64 * 1024;
+const WIRE_BATCH_FRAMES: usize = 64;
+
+type PendingReplies = std::sync::Mutex<HashMap<String, oneshot::Sender<Value>>>;
+
+#[derive(Clone)]
+enum Outbound {
+    Values(mpsc::Sender<Value>),
+    Wire {
+        tx: mpsc::Sender<WireFrame>,
+        bytes: Arc<Semaphore>,
+        byte_limit: usize,
+    },
+}
+
+struct WireFrame {
+    bytes: Vec<u8>,
+    // Includes the frame currently being written, not only channel storage.
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+struct PendingPermission<'a> {
+    pending: &'a PendingReplies,
+    id: &'a str,
+}
+
+impl Drop for PendingPermission<'_> {
+    fn drop(&mut self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(self.id);
+    }
+}
+
 #[derive(Clone)]
 pub struct Peer {
-    tx: mpsc::Sender<Value>,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
+    outbound: Outbound,
+    pending: Arc<PendingReplies>,
 }
 
 impl Peer {
+    /// In-process clients can continue consuming structured values without a
+    /// serialize/parse round trip. The stdio path uses compact wire frames.
     pub fn channel(capacity: usize) -> (Self, mpsc::Receiver<Value>) {
         let (tx, rx) = mpsc::channel(capacity);
         (
             Self {
-                tx,
-                pending: Arc::new(Mutex::new(HashMap::new())),
+                outbound: Outbound::Values(tx),
+                pending: Arc::new(PendingReplies::default()),
             },
             rx,
         )
     }
 
+    fn wire_channel(capacity: usize, byte_limit: usize) -> (Self, mpsc::Receiver<WireFrame>) {
+        let (tx, rx) = mpsc::channel(capacity);
+        (
+            Self {
+                outbound: Outbound::Wire {
+                    tx,
+                    bytes: Arc::new(Semaphore::new(byte_limit)),
+                    byte_limit,
+                },
+                pending: Arc::new(PendingReplies::default()),
+            },
+            rx,
+        )
+    }
+
+    async fn closed(&self) {
+        match &self.outbound {
+            Outbound::Values(tx) => tx.closed().await,
+            Outbound::Wire { tx, .. } => tx.closed().await,
+        }
+    }
+
     pub async fn send(&self, value: Value) -> Result<()> {
-        self.tx.send(value).await.context("ACP client disconnected")
+        match &self.outbound {
+            Outbound::Values(tx) => tx.send(value).await.context("ACP client disconnected"),
+            Outbound::Wire {
+                tx,
+                bytes,
+                byte_limit,
+            } => {
+                // Reserve before encoding: tasks waiting for a slow client never
+                // accumulate their own second, encoded copy of a large event.
+                let slot = tx.reserve().await.context("ACP client disconnected")?;
+                let length = crate::session::json_bytes(&value)?.saturating_add(1);
+                // Existing valid task/model snapshots can exceed the queue budget.
+                // Such a frame owns the whole budget exclusively until written.
+                let permits = length.min(*byte_limit) as u32;
+                let permit = bytes.clone().acquire_many_owned(permits).await?;
+                let mut encoded = Vec::with_capacity(length);
+                serde_json::to_writer(&mut encoded, &value)?;
+                encoded.push(b'\n');
+                drop(value);
+                slot.send(WireFrame {
+                    bytes: encoded,
+                    _permit: permit,
+                });
+                Ok(())
+            }
+        }
     }
     pub async fn update(&self, session: &str, update: Value) -> Result<()> {
-        self.send(json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session,"update":update}})).await
+        let mut envelope =
+            json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session}});
+        envelope["params"]["update"] = update;
+        self.send(envelope).await
     }
     pub async fn task_event(&self, session: &str, id: &str, event: Value) -> Result<()> {
-        self.send(json!({"jsonrpc":"2.0","method":"_harness/task","params":{"sessionId":session,"taskId":id,"event":event}})).await
+        let mut envelope = json!({"jsonrpc":"2.0","method":"_harness/task","params":{"sessionId":session,"taskId":id}});
+        envelope["params"]["event"] = event;
+        self.send(envelope).await
     }
 
     pub async fn permission(
@@ -89,20 +179,30 @@ impl Peer {
     ) -> Result<()> {
         let id = format!("permission-{}", Uuid::new_v4());
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id.clone(), tx);
-        let result: Result<Value> = async {
-            self.send(json!({"jsonrpc":"2.0","id":id,"method":"session/request_permission","params":{
-                "sessionId":session,"toolCall":{"toolCallId":call,"title":title,"kind":kind,"status":"pending","rawInput":input},
+        self.pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(id.clone(), tx);
+        // Future cancellation, including an outer task abort while send is
+        // backpressured, must retire the pending reply registration too.
+        let _registration = PendingPermission {
+            pending: &self.pending,
+            id: &id,
+        };
+        let exchange = async {
+            let mut envelope = json!({"jsonrpc":"2.0","id":id,"method":"session/request_permission","params":{
+                "sessionId":session,"toolCall":{"toolCallId":call,"title":title,"kind":kind,"status":"pending"},
                 "options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"reject-once","name":"Reject","kind":"reject_once"}]
-            }})).await?;
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => bail!("Permission request cancelled"),
-                result = tokio::time::timeout(Duration::from_secs(300),rx) => result.context("Permission request timed out")?.context("Permission response lost"),
-            }
-        }.await;
-        self.pending.lock().await.remove(&id);
-        let result = result?;
+            }});
+            envelope["params"]["toolCall"]["rawInput"] = input;
+            self.send(envelope).await?;
+            rx.await.context("Permission response lost")
+        };
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => bail!("Permission request cancelled"),
+            result = tokio::time::timeout(Duration::from_secs(300), exchange) => result.context("Permission request timed out")??,
+        };
         ensure!(
             result["result"]["outcome"]["outcome"] == "selected"
                 && result["result"]["outcome"]["optionId"] == "allow-once",
@@ -113,15 +213,215 @@ impl Peer {
 
     pub async fn resolve(&self, value: Value) {
         if let Some(id) = value["id"].as_str()
-            && let Some(sender) = self.pending.lock().await.remove(id)
+            && let Some(sender) = self
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(id)
         {
             let _ = sender.send(value);
         }
     }
 }
 
+async fn write_wire(
+    writer: impl tokio::io::AsyncWrite + Unpin,
+    mut outbound: mpsc::Receiver<WireFrame>,
+) -> Result<()> {
+    let mut writer = BufWriter::new(writer);
+    while let Some(frame) = outbound.recv().await {
+        let mut bytes = frame.bytes.len();
+        writer.write_all(&frame.bytes).await?;
+        drop(frame);
+        // Drain only ready frames and flush before waiting for more work. This
+        // batches bursts without adding a timer to permission/interactive output.
+        for _ in 1..WIRE_BATCH_FRAMES {
+            if bytes >= WIRE_BATCH_BYTES {
+                break;
+            }
+            let Ok(frame) = outbound.try_recv() else {
+                break;
+            };
+            bytes += frame.bytes.len();
+            writer.write_all(&frame.bytes).await?;
+            drop(frame);
+        }
+        writer.flush().await?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    fn pending_count(peer: &Peer) -> usize {
+        peer.pending.lock().unwrap().len()
+    }
+
+    #[tokio::test]
+    async fn structured_envelopes_move_large_values_without_cloning() {
+        let (peer, mut receiver) = Peer::channel(2);
+        let value = json!({"text":"x".repeat(65536)});
+        let pointer = value["text"].as_str().unwrap().as_ptr();
+        peer.update("session", value).await.unwrap();
+        let message = receiver.recv().await.unwrap();
+        assert_eq!(
+            message["params"]["update"]["text"]
+                .as_str()
+                .unwrap()
+                .as_ptr(),
+            pointer
+        );
+        let value = json!({"output":"y".repeat(65536)});
+        let pointer = value["output"].as_str().unwrap().as_ptr();
+        peer.task_event("session", "task", value).await.unwrap();
+        let message = receiver.recv().await.unwrap();
+        assert_eq!(
+            message["params"]["event"]["output"]
+                .as_str()
+                .unwrap()
+                .as_ptr(),
+            pointer
+        );
+    }
+
+    #[tokio::test]
+    async fn wire_byte_budget_waits_before_encoding_and_releases_on_frame_drop() {
+        let (peer, mut receiver) = Peer::wire_channel(4, 64);
+        peer.send(json!("x".repeat(40))).await.unwrap();
+        let sending = peer.clone();
+        let waiting = tokio::spawn(async move { sending.send(json!("y".repeat(40))).await });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        let first = receiver.recv().await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&first.bytes).unwrap(),
+            json!("x".repeat(40))
+        );
+        // Receiving alone does not release bytes while the writer owns a frame.
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let second = receiver.recv().await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&second.bytes).unwrap(),
+            json!("y".repeat(40))
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_cancel_and_abort_cleanup_when_output_channel_is_full() {
+        for abort in [false, true] {
+            let (peer, mut receiver) = Peer::channel(1);
+            peer.send(json!("occupied")).await.unwrap();
+            let cancel = CancellationToken::new();
+            let token = cancel.clone();
+            let requesting = peer.clone();
+            let task = tokio::spawn(async move {
+                requesting
+                    .permission("session", "call", "title", "execute", json!({}), &token)
+                    .await
+            });
+            tokio::task::yield_now().await;
+            assert_eq!(pending_count(&peer), 1);
+            if abort {
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+            } else {
+                cancel.cancel();
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(1), task)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .is_err()
+                );
+            }
+            assert_eq!(pending_count(&peer), 0);
+            assert_eq!(receiver.recv().await.unwrap(), json!("occupied"));
+            assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_wire_permission_releases_reserved_slot_and_pending_reply() {
+        let (peer, mut receiver) = Peer::wire_channel(2, 32);
+        // An existing large message is permitted exclusively, without truncation.
+        peer.send(json!({"output":"x".repeat(1024)})).await.unwrap();
+        let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let requesting = peer.clone();
+        let task = tokio::spawn(async move {
+            requesting
+                .permission("session", "call", "title", "execute", json!({}), &token)
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(pending_count(&peer), 1);
+        cancel.cancel();
+        assert!(task.await.unwrap().is_err());
+        assert_eq!(pending_count(&peer), 0);
+        drop(receiver.recv().await.unwrap());
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            peer.send(json!("after cancellation")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&receiver.recv().await.unwrap().bytes).unwrap(),
+            json!("after cancellation")
+        );
+    }
+
+    #[tokio::test]
+    async fn wire_writer_flushes_without_waiting_and_preserves_ready_burst_order() {
+        use tokio::io::AsyncBufReadExt;
+        let (peer, outbound) = Peer::wire_channel(64, 4096);
+        let (writer, reader) = tokio::io::duplex(128);
+        let writing = tokio::spawn(write_wire(writer, outbound));
+        let mut reader = BufReader::new(reader);
+        peer.send(json!({"sequence":0})).await.unwrap();
+        let mut first = String::new();
+        tokio::time::timeout(Duration::from_secs(1), reader.read_line(&mut first))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&first).unwrap()["sequence"],
+            0
+        );
+        let sending = tokio::spawn(async move {
+            for sequence in 1..200 {
+                peer.send(json!({"sequence":sequence})).await.unwrap();
+            }
+        });
+        for sequence in 1..200 {
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_secs(1), reader.read_line(&mut line))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&line).unwrap()["sequence"],
+                sequence
+            );
+        }
+        sending.await.unwrap();
+        writing.await.unwrap().unwrap();
+    }
+}
+
 struct Slot {
     session: Mutex<Session>,
+    persisted_bytes: AtomicUsize,
     workspace: Workspace,
     busy: Arc<Semaphore>,
     cancel: Mutex<CancellationToken>,
@@ -129,6 +429,32 @@ struct Slot {
     mailboxes: Arc<crate::agents::Mailboxes>,
     mcp: Arc<McpServers>,
     models: ModelCatalog,
+}
+
+// A hydrated transcript must also become cold on early validation/MCP failures.
+// Metadata remains in the slot; saves reject cold history until it is hydrated.
+struct HistoryLease<'a> {
+    session: tokio::sync::MutexGuard<'a, Session>,
+    limit: usize,
+}
+
+impl std::ops::Deref for HistoryLease<'_> {
+    type Target = Session;
+    fn deref(&self) -> &Session {
+        &self.session
+    }
+}
+
+impl std::ops::DerefMut for HistoryLease<'_> {
+    fn deref_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
+}
+
+impl Drop for HistoryLease<'_> {
+    fn drop(&mut self) {
+        self.session.release_history(self.limit);
+    }
 }
 
 pub struct Server {
@@ -139,6 +465,9 @@ pub struct Server {
     sessions: Mutex<HashMap<Uuid, Arc<Slot>>>,
     initialized: AtomicBool,
     agents: Arc<Semaphore>,
+    turns: Arc<Semaphore>,
+    session_preparation: Arc<Semaphore>,
+    processes: Arc<Semaphore>,
     searches: Arc<Semaphore>,
     shutdown: CancellationToken,
     mcp_pool: Arc<McpPool>,
@@ -162,6 +491,9 @@ impl Server {
         let mcp_pool = Arc::new(McpPool::new(config.max_mcp_connections));
         Ok(Self {
             agents: Arc::new(Semaphore::new(config.max_subagents)),
+            turns: Arc::new(Semaphore::new(config.max_active_turns)),
+            session_preparation: Arc::new(Semaphore::new(config.max_active_turns.min(8))),
+            processes: Arc::new(Semaphore::new(config.max_processes)),
             searches: Arc::new(Semaphore::new(config.max_searches)),
             config: Arc::new(config),
             peer,
@@ -194,7 +526,17 @@ impl Server {
             "Call initialize before session methods"
         );
         match method {
-            "_harness/stats" => Ok(self.provider.metrics.snapshot()),
+            "_harness/stats" => {
+                let mut stats = self.provider.metrics.snapshot();
+                stats["runtime"] = json!({
+                    "loadedSessions": self.sessions.lock().await.len(),
+                    "activeRootTurns": self.config.max_active_turns - self.turns.available_permits(),
+                    "liveSubagents": self.config.max_subagents - self.agents.available_permits(),
+                    "toolProcesses": self.config.max_processes - self.processes.available_permits(),
+                    "toolProcessLimit": self.config.max_processes,
+                });
+                Ok(stats)
+            }
             "_harness/models" => Ok(json!({"models":self.provider.models().await})),
             "authenticate" => {
                 let method = string(&params, "methodId")?;
@@ -211,6 +553,15 @@ impl Server {
                 Ok(json!({}))
             }
             "session/new" | "session/load" => {
+                let _preparation = if method == "session/load" {
+                    Some(tokio::select! {
+                        biased;
+                        _ = self.shutdown.cancelled() => bail!("Server shutting down"),
+                        permit = self.session_preparation.acquire() => permit?,
+                    })
+                } else {
+                    None
+                };
                 let mut workspace = Workspace::new(Path::new(string(&params, "cwd")?)).await?;
                 workspace.protect(self.config.state_dir.clone());
                 let mcp = Arc::new(McpServers::parse(
@@ -242,10 +593,15 @@ impl Server {
                 let id = session.id;
                 let slot = Arc::new(Slot {
                     session: Mutex::new(session),
+                    persisted_bytes: AtomicUsize::new(0),
                     workspace,
                     busy: Arc::new(Semaphore::new(0)),
                     cancel: Mutex::new(self.shutdown.child_token()),
-                    jobs: Jobs::new(self.config.max_jobs, self.config.tool_output_bytes),
+                    jobs: Jobs::with_process_limit(
+                        self.config.max_jobs,
+                        self.config.tool_output_bytes,
+                        self.processes.clone(),
+                    ),
                     mailboxes: Arc::new(crate::agents::Mailboxes::default()),
                     mcp,
                     models,
@@ -259,11 +615,13 @@ impl Server {
                 sessions.insert(id, slot.clone());
                 drop(sessions);
                 let result: Result<()> = async {
-                    let session = slot.session.lock().await;
-                    self.store.save(&session).await?;
+                    let mut session = slot.session.lock().await;
+                    let bytes = self.store.save_with_size(&session).await?;
+                    slot.persisted_bytes.store(bytes, Ordering::Relaxed);
                     if method == "session/load" {
                         self.replay(&session).await?;
                     }
+                    session.release_history(self.config.resident_history_bytes);
                     Ok(())
                 }
                 .await;
@@ -420,7 +778,10 @@ impl Server {
             .clone()
             .try_acquire_owned()
             .context("Session is busy")?;
-        let mut session = slot.session.lock().await;
+        let mut session = HistoryLease {
+            session: slot.session.lock().await,
+            limit: self.config.resident_history_bytes,
+        };
         let previous = (
             session.model.clone(),
             session.reasoning_effort.clone(),
@@ -491,10 +852,25 @@ impl Server {
         {
             return Ok(json!({"configOptions":self.config_options(&session,&slot.models)}));
         }
-        if let Err(error) = self.store.save(&session).await {
+        // Hold admission through hydrate + save + cold-history release; a file
+        // read limit alone would queue fully decoded histories before their saves.
+        let _preparation = tokio::select! {
+            biased;
+            _ = self.shutdown.cancelled() => bail!("Server shutting down"),
+            permit = self.session_preparation.acquire() => permit?,
+        };
+        if let Err(error) = self.store.hydrate(&mut session, &slot.workspace).await {
             (session.model, session.reasoning_effort, session.mode) = previous;
             return Err(error);
         }
+        match self.store.save_with_size(&session).await {
+            Ok(bytes) => slot.persisted_bytes.store(bytes, Ordering::Relaxed),
+            Err(error) => {
+                (session.model, session.reasoning_effort, session.mode) = previous;
+                return Err(error);
+            }
+        }
+        session.release_history(self.config.resident_history_bytes);
         if previous.2 != session.mode {
             self.peer
                 .update(
@@ -532,13 +908,32 @@ impl Server {
             .context("Session is busy; cancel or wait for its active turn")?;
         let cancel = self.shutdown.child_token();
         *slot.cancel.lock().await = cancel.clone();
+        // Queue the original prompt, not expanded model history/instructions.
+        // Children use the independent model-request pool, so a parent awaiting
+        // a child cannot exhaust this top-level turn gate and deadlock it.
+        let _turn = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(json!({"stopReason":"cancelled"})),
+            permit = self.turns.acquire() => permit?,
+        };
         let text = self.prompt_text(&params, &slot.workspace).await?;
+        drop(params);
         ensure!(!text.trim().is_empty(), "Prompt is empty");
         ensure!(
             text.len() <= self.config.context_bytes / 2,
             "Prompt exceeds context budget"
         );
-        let mut session = slot.session.lock().await;
+        let mut session = HistoryLease {
+            session: slot.session.lock().await,
+            limit: self.config.resident_history_bytes,
+        };
+        if let Some(bytes) = self
+            .store
+            .hydrate_with_size(&mut session, &slot.workspace)
+            .await?
+        {
+            slot.persisted_bytes.store(bytes, Ordering::Relaxed);
+        }
         let ctx = AgentContext {
             config: self.config.clone(),
             provider: self.provider.clone(),
@@ -565,7 +960,8 @@ impl Server {
             Err(_) if cancel.is_cancelled() => return Ok(json!({"stopReason":"cancelled"})),
             Err(error) => return Err(error),
         };
-        let user = json!({"role":"user","content":text});
+        let mut user = json!({"role":"user"});
+        user["content"] = Value::String(text);
         let reserved = crate::session::json_bytes(&user)?
             + instructions.len()
             + toolset.schemas.encoded.get().len()
@@ -574,14 +970,13 @@ impl Server {
             reserved <= self.config.context_bytes,
             "Prompt and project instructions exceed context budget"
         );
-        let (mut items, omitted) =
-            session.context_with_omitted(self.config.context_bytes - reserved);
+        let (mut prefix, omitted) = session.project(self.config.context_bytes - reserved);
         if omitted + session.dropped_turns > 0 {
-            items.insert(0,json!({"role":"developer","content":format!("{} older turns are outside the model window. Do not assume their contents; re-read the workspace as needed. Saved history is separate from this window.",omitted + session.dropped_turns)}));
+            prefix.insert(0,std::borrow::Cow::Owned(json!({"role":"developer","content":format!("{} older turns are outside the model window. Do not assume their contents; re-read the workspace as needed. Saved history is separate from this window.",omitted + session.dropped_turns)})));
         }
-        let start = items.len();
-        items.push(user);
-        let base_bytes = crate::session::json_bytes(&*session)?;
+        let start = 0;
+        let mut items = vec![user];
+        let base_bytes = slot.persisted_bytes.load(Ordering::Relaxed);
         // Check capacity before spending a request. Durable intent is written
         // before the first tool boundary; read-only replies need one final save.
         ensure!(
@@ -594,6 +989,7 @@ impl Server {
         let result = crate::agent::run_with_instructions(
             &ctx,
             &mut items,
+            &mut prefix,
             instructions,
             toolset,
             Some(crate::agent::Checkpoint {
@@ -604,11 +1000,12 @@ impl Server {
             }),
         )
         .await;
+        drop(prefix);
         // Save complete exchanges only; interrupted responses never enter model history.
-        let mut turn = items.split_off(start);
+        let mut turn = std::mem::take(&mut items);
         repair_calls(&mut turn);
-        session.turns.push_back(Turn { items: turn });
-        let saved = self.store.save(&session).await;
+        session.turns.push_back(Turn { items: turn.into() });
+        let saved = self.store.save_with_size(&session).await;
         *slot.cancel.lock().await = self.shutdown.child_token();
         if let Err(error) = saved {
             // Never retain an unbounded unsaved turn, or overwrite its recovery
@@ -620,6 +1017,11 @@ impl Server {
                 error.context("Could not commit session; reload it to recover the last checkpoint")
             );
         }
+        slot.persisted_bytes
+            .store(saved.expect("successful session save"), Ordering::Relaxed);
+        // Free projected old turns before releasing the durable idle history.
+        drop(items);
+        session.release_history(self.config.resident_history_bytes);
         if cancel.is_cancelled() {
             return Ok(json!({"stopReason":"cancelled"}));
         }
@@ -666,7 +1068,7 @@ impl Server {
 
     async fn replay(&self, session: &Session) -> Result<()> {
         for turn in &session.turns {
-            for item in &turn.items {
+            for item in turn.items.iter() {
                 if item["type"] == "function_call" {
                     let input = item["arguments"]
                         .as_str()
@@ -789,17 +1191,10 @@ pub async fn read_frame(reader: &mut (impl AsyncBufRead + Unpin)) -> Result<Opti
 }
 
 pub async fn serve(config: Config) -> Result<()> {
-    let (peer, mut outbound) = Peer::channel(64);
+    let pending_prompts = Arc::new(Semaphore::new(config.max_pending_prompt_bytes));
+    let (peer, outbound) = Peer::wire_channel(64, WIRE_QUEUE_BYTES);
     let server = Arc::new(Server::new(config, peer.clone()).await?);
-    let writer = tokio::spawn(async move {
-        let mut stdout = BufWriter::new(tokio::io::stdout());
-        while let Some(value) = outbound.recv().await {
-            stdout.write_all(&serde_json::to_vec(&value)?).await?;
-            stdout.write_all(b"\n").await?;
-            stdout.flush().await?;
-        }
-        Ok::<_, anyhow::Error>(())
-    });
+    let writer = tokio::spawn(write_wire(tokio::io::stdout(), outbound));
     let mut reader = BufReader::new(tokio::io::stdin());
     let mut handlers = JoinSet::new();
     let signal = shutdown_signal();
@@ -809,7 +1204,7 @@ pub async fn serve(config: Config) -> Result<()> {
             let frame = tokio::select! {
                 biased;
                 _ = &mut signal => break,
-                _ = peer.tx.closed() => break,
+                _ = peer.closed() => break,
                 frame = read_frame(&mut reader) => frame?,
             };
             let Some(frame) = frame else {
@@ -818,7 +1213,7 @@ pub async fn serve(config: Config) -> Result<()> {
             if frame.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
-            let value: Value = match serde_json::from_slice(&frame) {
+            let mut value: Value = match serde_json::from_slice(&frame) {
                 Ok(value) => value,
                 Err(_) => {
                     peer.send(error(Value::Null, -32700, "Parse error")).await?;
@@ -839,10 +1234,11 @@ pub async fn serve(config: Config) -> Result<()> {
                     .await?;
                 continue;
             };
-            let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+            let method = method.to_owned();
+            let params = value.get_mut("params").map(Value::take).unwrap_or_else(|| json!({}));
             if value.get("id").is_none() {
                 if method == "session/cancel" {
-                    let _ = server.handle(method, params).await;
+                    let _ = server.handle(&method, params).await;
                 }
                 continue;
             }
@@ -863,9 +1259,23 @@ pub async fn serve(config: Config) -> Result<()> {
             }
             let server = server.clone();
             let peer = peer.clone();
-            let method = method.to_owned();
+            // Count queued AND executing prompt frames. Reject overload without
+            // blocking the reader: permission replies/cancellation must still flow.
+            let prompt_bytes = if method == "session/prompt" {
+                match pending_prompts.clone().try_acquire_many_owned(frame.len() as u32) {
+                    Ok(permit) => Some(permit),
+                    Err(_) => {
+                        peer.send(error(value["id"].clone(), -32000,
+                            "Pending prompt byte budget exhausted; retry after an active turn completes"))
+                            .await?;
+                        continue;
+                    }
+                }
+            } else { None };
+            let id = value["id"].take();
+            drop(value);
             handlers.spawn(async move {
-                let id = value["id"].clone();
+                let _prompt_bytes = prompt_bytes;
                 let response = match server.handle(&method, params).await {
                     Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
                     Err(err) => {
@@ -925,6 +1335,37 @@ mod tests {
         net::TcpListener,
         sync::Notify,
     };
+
+    #[tokio::test]
+    async fn history_lease_releases_hydrated_transcripts_on_early_return() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(temp.path()).await.unwrap();
+        let store = Store::new(temp.path().join("sessions")).await.unwrap();
+        let mut data = Session::new(&workspace, &Config::default());
+        data.turns.push_back(Turn {
+            items: vec![json!({"role":"user","content":"saved"})].into(),
+        });
+        store.save(&data).await.unwrap();
+        data.release_history(0);
+        let slot = Mutex::new(data);
+        let fail = async {
+            let mut lease = HistoryLease {
+                session: slot.lock().await,
+                limit: 0,
+            };
+            store.hydrate(&mut lease, &workspace).await?;
+            ensure!(false, "Fixture preparation failure");
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        assert!(fail.is_err());
+        let data = slot.lock().await;
+        assert!(data.turns.is_empty());
+        assert_eq!(
+            store.load(data.id, &workspace).await.unwrap().turns.len(),
+            1
+        );
+    }
 
     #[tokio::test]
     async fn slow_model_discovery_does_not_block_session_cancellation() {

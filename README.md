@@ -55,14 +55,25 @@ Model inference and browser memory are excluded. Timings and RSS vary by workloa
 [Raw results](https://github.com/ErzenXz/piko/blob/main/docs/benchmarks/macos-arm64-0.7.0.json) ·
 [Before/after results and reproduction](https://github.com/ErzenXz/piko/blob/main/docs/performance.md)
 
+[Unreleased binary-size measurements and TLS tests →](docs/binary-size.md)
+
 ## Built to stay light
 
 One async event-loop thread, shared tool schemas and HTTP connections, lazy MCP and
 bounded history, files and tool output. No telemetry, daemon, updater or bundled
 browser/model.
 
+Large agent pools can use the [laptop profile](examples/laptop-swarm.toml): shared
+runtime, bounded active turns, disk-backed idle history and compact subagent
+contexts. [Scale tests and limits →](docs/performance.md)
+
 File/search tools, exact patches, image viewing, interactive terminals, subagents
-with messaging, MCP and recoverable sessions are built in. Approved web fetching
+with messaging, MCP and recoverable sessions are built in. Stable prompt prefixes,
+provider-aware caching and bounded retries keep repeated work efficient. OpenAI
+Fast/Ultrafast are opt-in; cache reads, writes and actual service tiers are reported.
+[Provider options and cache metrics →](docs/reference.md#cache-reuse-measured-honestly)
+
+Approved web fetching
 and optional web search/browser automation expand what the agent can verify.
 [Tool setup →](https://github.com/ErzenXz/piko/blob/main/docs/reference.md#web-browser-images-and-interactive-tools)
 [Design and recovery →](https://github.com/ErzenXz/piko/blob/main/docs/design.md)

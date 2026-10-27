@@ -1,0 +1,1864 @@
+{
+  "scope": "Repeated warm-cache native-binary comparison using ACP read-only control RPCs and loopback HTTP/SSE only. Control RPC timing includes Python/stdio scheduling but no persistence, models or RSS-sampling subprocesses. Native PID RSS excludes the Python fixture, real models and external tools; sampled RSS is not a guaranteed production peak. No TLS handshake or real inference throughput is measured.",
+  "environment": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "python": "3.14.8",
+    "logical_cpus": 10
+  },
+  "measurement": {
+    "rounds": 7,
+    "sessions_per_run": 32,
+    "idle_samples": 3,
+    "sample_interval_seconds": 0.01,
+    "startup_excludes_fixture_setup": true,
+    "workload_excludes_session_creation": true,
+    "workload_includes_fixture_delay_and_rss_sampling": true,
+    "control_rpc_count": 512,
+    "control_rpc_batch_size": 16,
+    "control_rpc_after_session_creation_before_model_prompts": true,
+    "control_rpc_excludes_persistence_models_and_rss_sampling": true,
+    "percentage_convention": "(after - before) / before * 100; null when before is zero"
+  },
+  "summary": {
+    "binary_bytes": {
+      "unit": "bytes",
+      "lower_is_better": true,
+      "before_median": 3419632,
+      "after_median": 3352528,
+      "median_paired_change_percent": -1.9623164129941466,
+      "pairs": [
+        {
+          "round": 1,
+          "before": 3419632,
+          "after": 3352528,
+          "change_percent": -1.9623164129941466
+        },
+        {
+          "round": 2,
+          "before": 3419632,
+          "after": 3352528,
+          "change_percent": -1.9623164129941466
+        },
+        {
+          "round": 3,
+          "before": 3419632,
+          "after": 3352528,
+          "change_percent": -1.9623164129941466
+        },
+        {
+          "round": 4,
+          "before": 3419632,
+          "after": 3352528,
+          "change_percent": -1.9623164129941466
+        },
+        {
+          "round": 5,
+          "before": 3419632,
+          "after": 3352528,
+          "change_percent": -1.9623164129941466
+        },
+        {
+          "round": 6,
+          "before": 3419632,
+          "after": 3352528,
+          "change_percent": -1.9623164129941466
+        },
+        {
+          "round": 7,
+          "before": 3419632,
+          "after": 3352528,
+          "change_percent": -1.9623164129941466
+        }
+      ]
+    },
+    "startup_and_initialize_ms": {
+      "unit": "ms",
+      "lower_is_better": true,
+      "before_median": 5.013999994844198,
+      "after_median": 5.038707997300662,
+      "median_paired_change_percent": -0.6090244951009416,
+      "pairs": [
+        {
+          "round": 1,
+          "before": 5.069582999567501,
+          "after": 5.038707997300662,
+          "change_percent": -0.6090244951009416
+        },
+        {
+          "round": 2,
+          "before": 8.29770800191909,
+          "after": 4.264000002876855,
+          "change_percent": -48.61231557086994
+        },
+        {
+          "round": 3,
+          "before": 6.516541005112231,
+          "after": 5.085458993562497,
+          "change_percent": -21.96076124476235
+        },
+        {
+          "round": 4,
+          "before": 4.846000010729767,
+          "after": 5.137833999469876,
+          "change_percent": 6.022162362648471
+        },
+        {
+          "round": 5,
+          "before": 4.539000001386739,
+          "after": 5.002541991416365,
+          "change_percent": 10.212425421634851
+        },
+        {
+          "round": 6,
+          "before": 4.764124998473562,
+          "after": 4.698332995758392,
+          "change_percent": -1.3809881717261892
+        },
+        {
+          "round": 7,
+          "before": 5.013999994844198,
+          "after": 5.2380419947439805,
+          "change_percent": 4.468328682292788
+        }
+      ]
+    },
+    "idle_rss_kib": {
+      "unit": "KiB",
+      "lower_is_better": true,
+      "before_median": 3968,
+      "after_median": 3936,
+      "median_paired_change_percent": -1.2048192771084338,
+      "pairs": [
+        {
+          "round": 1,
+          "before": 3936,
+          "after": 3952,
+          "change_percent": 0.40650406504065045
+        },
+        {
+          "round": 2,
+          "before": 3968,
+          "after": 3952,
+          "change_percent": -0.4032258064516129
+        },
+        {
+          "round": 3,
+          "before": 3984,
+          "after": 3936,
+          "change_percent": -1.2048192771084338
+        },
+        {
+          "round": 4,
+          "before": 4000,
+          "after": 3952,
+          "change_percent": -1.2
+        },
+        {
+          "round": 5,
+          "before": 3968,
+          "after": 3904,
+          "change_percent": -1.6129032258064515
+        },
+        {
+          "round": 6,
+          "before": 3984,
+          "after": 3888,
+          "change_percent": -2.4096385542168677
+        },
+        {
+          "round": 7,
+          "before": 3968,
+          "after": 3920,
+          "change_percent": -1.2096774193548387
+        }
+      ]
+    },
+    "sampled_workload_peak_rss_kib": {
+      "unit": "KiB",
+      "lower_is_better": true,
+      "before_median": 6160,
+      "after_median": 5936,
+      "median_paired_change_percent": -3.3766233766233764,
+      "pairs": [
+        {
+          "round": 1,
+          "before": 6064,
+          "after": 5936,
+          "change_percent": -2.1108179419525066
+        },
+        {
+          "round": 2,
+          "before": 6144,
+          "after": 5984,
+          "change_percent": -2.604166666666667
+        },
+        {
+          "round": 3,
+          "before": 6176,
+          "after": 5936,
+          "change_percent": -3.8860103626943006
+        },
+        {
+          "round": 4,
+          "before": 6176,
+          "after": 5920,
+          "change_percent": -4.145077720207254
+        },
+        {
+          "round": 5,
+          "before": 6208,
+          "after": 5952,
+          "change_percent": -4.123711340206185
+        },
+        {
+          "round": 6,
+          "before": 6160,
+          "after": 5952,
+          "change_percent": -3.3766233766233764
+        },
+        {
+          "round": 7,
+          "before": 6080,
+          "after": 5936,
+          "change_percent": -2.368421052631579
+        }
+      ]
+    },
+    "workload_ms": {
+      "unit": "ms",
+      "lower_is_better": true,
+      "before_median": 83.6646250099875,
+      "after_median": 73.5525000054622,
+      "median_paired_change_percent": -12.120265883156105,
+      "pairs": [
+        {
+          "round": 1,
+          "before": 85.74862500245217,
+          "after": 73.5525000054622,
+          "change_percent": -14.223114360890557
+        },
+        {
+          "round": 2,
+          "before": 83.87404200038873,
+          "after": 86.85375000641216,
+          "change_percent": 3.552598557262352
+        },
+        {
+          "round": 3,
+          "before": 83.6646250099875,
+          "after": 73.5242500086315,
+          "change_percent": -12.120265883156105
+        },
+        {
+          "round": 4,
+          "before": 81.45991699711885,
+          "after": 84.83470800274517,
+          "change_percent": 4.1428853969317005
+        },
+        {
+          "round": 5,
+          "before": 94.18395900866017,
+          "after": 77.73725000151899,
+          "change_percent": -17.462324986390637
+        },
+        {
+          "round": 6,
+          "before": 83.40504099032842,
+          "after": 66.48433399095666,
+          "change_percent": -20.287391263717346
+        },
+        {
+          "round": 7,
+          "before": 64.42516700190026,
+          "after": 69.57562500610948,
+          "change_percent": 7.994481417575987
+        }
+      ]
+    },
+    "requests_per_second": {
+      "unit": "requests/s",
+      "lower_is_better": false,
+      "before_median": 382.4794528891988,
+      "after_median": 435.06339006320104,
+      "median_paired_change_percent": 13.791878190074106,
+      "pairs": [
+        {
+          "round": 1,
+          "before": 373.1838265521446,
+          "after": 435.06339006320104,
+          "change_percent": 16.581523396328134
+        },
+        {
+          "round": 2,
+          "before": 381.52447690373253,
+          "after": 368.43544461393475,
+          "change_percent": -3.430718887559199
+        },
+        {
+          "round": 3,
+          "before": 382.4794528891988,
+          "after": 435.23055313373897,
+          "change_percent": 13.791878190074106
+        },
+        {
+          "round": 4,
+          "before": 392.8312374923216,
+          "after": 377.2041037609808,
+          "change_percent": -3.9780781770559286
+        },
+        {
+          "round": 5,
+          "before": 339.76061674215265,
+          "after": 411.6430668614431,
+          "change_percent": 21.1567929233666
+        },
+        {
+          "round": 6,
+          "before": 383.6698552034846,
+          "after": 481.3163955940765,
+          "change_percent": 25.450667824503366
+        },
+        {
+          "round": 7,
+          "before": 496.7003034552652,
+          "after": 459.93118994173693,
+          "change_percent": -7.402675870690273
+        }
+      ]
+    },
+    "prompt_p50_ms": {
+      "unit": "ms",
+      "lower_is_better": true,
+      "before_median": 46.030208497541025,
+      "after_median": 41.305562503112014,
+      "median_paired_change_percent": -5.970581253043412,
+      "pairs": [
+        {
+          "round": 1,
+          "before": 45.293687500816304,
+          "after": 41.305562503112014,
+          "change_percent": -8.805034912718055
+        },
+        {
+          "round": 2,
+          "before": 48.335479499655776,
+          "after": 53.5569374987972,
+          "change_percent": 10.802536880137097
+        },
+        {
+          "round": 3,
+          "before": 46.030208497541025,
+          "after": 43.281937498250045,
+          "change_percent": -5.970581253043412
+        },
+        {
+          "round": 4,
+          "before": 45.105853998393286,
+          "after": 46.08910450042458,
+          "change_percent": 2.1798733753413044
+        },
+        {
+          "round": 5,
+          "before": 48.870270496991,
+          "after": 38.12506249960279,
+          "change_percent": -21.987207944858422
+        },
+        {
+          "round": 6,
+          "before": 49.71849999856204,
+          "after": 35.5655624953215,
+          "change_percent": -28.466139371963894
+        },
+        {
+          "round": 7,
+          "before": 35.77402099472238,
+          "after": 38.70658349478617,
+          "change_percent": 8.197464021437307
+        }
+      ]
+    },
+    "control_rpc_ms": {
+      "unit": "ms",
+      "lower_is_better": true,
+      "before_median": 20.10508299281355,
+      "after_median": 18.396625004243106,
+      "median_paired_change_percent": -7.465508644218269,
+      "pairs": [
+        {
+          "round": 1,
+          "before": 23.284916998818517,
+          "after": 18.387917007203214,
+          "change_percent": -21.03078139322454
+        },
+        {
+          "round": 2,
+          "before": 20.10508299281355,
+          "after": 26.575791998766363,
+          "change_percent": 32.184443149355474
+        },
+        {
+          "round": 3,
+          "before": 18.417458006297238,
+          "after": 24.65354099695105,
+          "change_percent": 33.85962920899068
+        },
+        {
+          "round": 4,
+          "before": 19.51195899164304,
+          "after": 18.055292006465606,
+          "change_percent": -7.465508644218269
+        },
+        {
+          "round": 5,
+          "before": 21.87733299797401,
+          "after": 19.39933300309349,
+          "change_percent": -11.326791959102144
+        },
+        {
+          "round": 6,
+          "before": 16.232166002737358,
+          "after": 17.00645800156053,
+          "change_percent": 4.770108922571383
+        },
+        {
+          "round": 7,
+          "before": 20.6248750037048,
+          "after": 18.396625004243106,
+          "change_percent": -10.803701836066594
+        }
+      ]
+    },
+    "control_rpc_per_second": {
+      "unit": "requests/s",
+      "lower_is_better": false,
+      "before_median": 25466.196791279675,
+      "after_median": 27831.1918562187,
+      "median_paired_change_percent": 8.067811834091646,
+      "pairs": [
+        {
+          "round": 1,
+          "before": 21988.482931933107,
+          "after": 27844.37192094303,
+          "change_percent": 26.63161895769362
+        },
+        {
+          "round": 2,
+          "before": 25466.196791279675,
+          "after": 19265.653494871076,
+          "change_percent": -24.34813233883371
+        },
+        {
+          "round": 3,
+          "before": 27799.710460853967,
+          "after": 20767.807758865958,
+          "change_percent": -25.294877484029733
+        },
+        {
+          "round": 4,
+          "before": 26240.317551881348,
+          "after": 28357.33699663526,
+          "change_percent": 8.067811834091646
+        },
+        {
+          "round": 5,
+          "before": 23403.21830121682,
+          "after": 26392.65999085405,
+          "change_percent": 12.773635023871035
+        },
+        {
+          "round": 6,
+          "before": 31542.309258891106,
+          "after": 30106.210238076517,
+          "change_percent": -4.552929238716987
+        },
+        {
+          "round": 7,
+          "before": 24824.392870649182,
+          "after": 27831.1918562187,
+          "change_percent": 12.112276023171418
+        }
+      ]
+    }
+  },
+  "runs": [
+    {
+      "binary": {
+        "path": "/private/tmp/piko-provider.BvY403/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3419632,
+        "sha256": "f0340aabea8e928cb71dff2f1128fbedbd09ecbfa0074507e0b8866ab04d08ae"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 23.284916998818517,
+      "control_rpc_per_second": 21988.482931933107,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 5.069582999567501,
+      "session_creation_ms": 78.02800000354182,
+      "workload_ms": 85.74862500245217,
+      "requests_per_second": 373.1838265521446,
+      "prompt_latency_ms": {
+        "p50": 45.293687500816304,
+        "p95": 81.53900000615977
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3936,
+          "max_kib": 3936,
+          "samples": [
+            {
+              "VmRSS": 3936
+            },
+            {
+              "VmRSS": 3936
+            },
+            {
+              "VmRSS": 3936
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 6032.0,
+          "max_kib": 6064,
+          "samples": [
+            {
+              "VmRSS": 5312
+            },
+            {
+              "VmRSS": 5984
+            },
+            {
+              "VmRSS": 6000
+            },
+            {
+              "VmRSS": 6064
+            },
+            {
+              "VmRSS": 6064
+            },
+            {
+              "VmRSS": 6064
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 6064,
+          "max_kib": 6064,
+          "samples": [
+            {
+              "VmRSS": 6064
+            },
+            {
+              "VmRSS": 6064
+            },
+            {
+              "VmRSS": 6064
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "before",
+      "round": 1,
+      "sequence": 1
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-size.28oEyJ/target/release/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3352528,
+        "sha256": "f6f89093cab6db5e276a9b2a1b27e352e54db410ea4720683e58b6efe5c5a30c"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 18.387917007203214,
+      "control_rpc_per_second": 27844.37192094303,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 5.038707997300662,
+      "session_creation_ms": 61.61900000006426,
+      "workload_ms": 73.5525000054622,
+      "requests_per_second": 435.06339006320104,
+      "prompt_latency_ms": {
+        "p50": 41.305562503112014,
+        "p95": 70.57029200950637
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3952,
+          "max_kib": 3952,
+          "samples": [
+            {
+              "VmRSS": 3952
+            },
+            {
+              "VmRSS": 3952
+            },
+            {
+              "VmRSS": 3952
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 5840,
+          "max_kib": 5936,
+          "samples": [
+            {
+              "VmRSS": 5408
+            },
+            {
+              "VmRSS": 5664
+            },
+            {
+              "VmRSS": 5840
+            },
+            {
+              "VmRSS": 5888
+            },
+            {
+              "VmRSS": 5936
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 5936,
+          "max_kib": 5936,
+          "samples": [
+            {
+              "VmRSS": 5936
+            },
+            {
+              "VmRSS": 5936
+            },
+            {
+              "VmRSS": 5936
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "after",
+      "round": 1,
+      "sequence": 2
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-size.28oEyJ/target/release/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3352528,
+        "sha256": "f6f89093cab6db5e276a9b2a1b27e352e54db410ea4720683e58b6efe5c5a30c"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 26.575791998766363,
+      "control_rpc_per_second": 19265.653494871076,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 4.264000002876855,
+      "session_creation_ms": 75.81933301116806,
+      "workload_ms": 86.85375000641216,
+      "requests_per_second": 368.43544461393475,
+      "prompt_latency_ms": {
+        "p50": 53.5569374987972,
+        "p95": 83.40179100923706
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3952,
+          "max_kib": 3952,
+          "samples": [
+            {
+              "VmRSS": 3952
+            },
+            {
+              "VmRSS": 3952
+            },
+            {
+              "VmRSS": 3952
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 5936.0,
+          "max_kib": 5984,
+          "samples": [
+            {
+              "VmRSS": 5424
+            },
+            {
+              "VmRSS": 5680
+            },
+            {
+              "VmRSS": 5904
+            },
+            {
+              "VmRSS": 5968
+            },
+            {
+              "VmRSS": 5968
+            },
+            {
+              "VmRSS": 5984
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 5984,
+          "max_kib": 5984,
+          "samples": [
+            {
+              "VmRSS": 5984
+            },
+            {
+              "VmRSS": 5984
+            },
+            {
+              "VmRSS": 5984
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "after",
+      "round": 2,
+      "sequence": 3
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-provider.BvY403/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3419632,
+        "sha256": "f0340aabea8e928cb71dff2f1128fbedbd09ecbfa0074507e0b8866ab04d08ae"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 20.10508299281355,
+      "control_rpc_per_second": 25466.196791279675,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 8.29770800191909,
+      "session_creation_ms": 65.21420800709166,
+      "workload_ms": 83.87404200038873,
+      "requests_per_second": 381.52447690373253,
+      "prompt_latency_ms": {
+        "p50": 48.335479499655776,
+        "p95": 80.34820899774786
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3968,
+          "max_kib": 3968,
+          "samples": [
+            {
+              "VmRSS": 3968
+            },
+            {
+              "VmRSS": 3968
+            },
+            {
+              "VmRSS": 3968
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 6064.0,
+          "max_kib": 6144,
+          "samples": [
+            {
+              "VmRSS": 5440
+            },
+            {
+              "VmRSS": 5984
+            },
+            {
+              "VmRSS": 6048
+            },
+            {
+              "VmRSS": 6080
+            },
+            {
+              "VmRSS": 6128
+            },
+            {
+              "VmRSS": 6144
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 6144,
+          "max_kib": 6144,
+          "samples": [
+            {
+              "VmRSS": 6144
+            },
+            {
+              "VmRSS": 6144
+            },
+            {
+              "VmRSS": 6144
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "before",
+      "round": 2,
+      "sequence": 4
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-provider.BvY403/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3419632,
+        "sha256": "f0340aabea8e928cb71dff2f1128fbedbd09ecbfa0074507e0b8866ab04d08ae"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 18.417458006297238,
+      "control_rpc_per_second": 27799.710460853967,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 6.516541005112231,
+      "session_creation_ms": 61.21225000242703,
+      "workload_ms": 83.6646250099875,
+      "requests_per_second": 382.4794528891988,
+      "prompt_latency_ms": {
+        "p50": 46.030208497541025,
+        "p95": 78.22979100455996
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3984,
+          "max_kib": 3984,
+          "samples": [
+            {
+              "VmRSS": 3984
+            },
+            {
+              "VmRSS": 3984
+            },
+            {
+              "VmRSS": 3984
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 6120.0,
+          "max_kib": 6176,
+          "samples": [
+            {
+              "VmRSS": 5312
+            },
+            {
+              "VmRSS": 5952
+            },
+            {
+              "VmRSS": 6112
+            },
+            {
+              "VmRSS": 6128
+            },
+            {
+              "VmRSS": 6176
+            },
+            {
+              "VmRSS": 6176
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 6176,
+          "max_kib": 6176,
+          "samples": [
+            {
+              "VmRSS": 6176
+            },
+            {
+              "VmRSS": 6176
+            },
+            {
+              "VmRSS": 6176
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "before",
+      "round": 3,
+      "sequence": 5
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-size.28oEyJ/target/release/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3352528,
+        "sha256": "f6f89093cab6db5e276a9b2a1b27e352e54db410ea4720683e58b6efe5c5a30c"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 24.65354099695105,
+      "control_rpc_per_second": 20767.807758865958,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 5.085458993562497,
+      "session_creation_ms": 70.96733299840707,
+      "workload_ms": 73.5242500086315,
+      "requests_per_second": 435.23055313373897,
+      "prompt_latency_ms": {
+        "p50": 43.281937498250045,
+        "p95": 68.11862500035204
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3936,
+          "max_kib": 3936,
+          "samples": [
+            {
+              "VmRSS": 3936
+            },
+            {
+              "VmRSS": 3936
+            },
+            {
+              "VmRSS": 3936
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 5856,
+          "max_kib": 5936,
+          "samples": [
+            {
+              "VmRSS": 4832
+            },
+            {
+              "VmRSS": 5744
+            },
+            {
+              "VmRSS": 5856
+            },
+            {
+              "VmRSS": 5904
+            },
+            {
+              "VmRSS": 5936
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 5936,
+          "max_kib": 5936,
+          "samples": [
+            {
+              "VmRSS": 5936
+            },
+            {
+              "VmRSS": 5936
+            },
+            {
+              "VmRSS": 5936
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "after",
+      "round": 3,
+      "sequence": 6
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-size.28oEyJ/target/release/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3352528,
+        "sha256": "f6f89093cab6db5e276a9b2a1b27e352e54db410ea4720683e58b6efe5c5a30c"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 18.055292006465606,
+      "control_rpc_per_second": 28357.33699663526,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 5.137833999469876,
+      "session_creation_ms": 74.69612501154188,
+      "workload_ms": 84.83470800274517,
+      "requests_per_second": 377.2041037609808,
+      "prompt_latency_ms": {
+        "p50": 46.08910450042458,
+        "p95": 78.91616701090243
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3952,
+          "max_kib": 3952,
+          "samples": [
+            {
+              "VmRSS": 3952
+            },
+            {
+              "VmRSS": 3952
+            },
+            {
+              "VmRSS": 3952
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 5880.0,
+          "max_kib": 5920,
+          "samples": [
+            {
+              "VmRSS": 5328
+            },
+            {
+              "VmRSS": 5696
+            },
+            {
+              "VmRSS": 5872
+            },
+            {
+              "VmRSS": 5888
+            },
+            {
+              "VmRSS": 5904
+            },
+            {
+              "VmRSS": 5920
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 5920,
+          "max_kib": 5920,
+          "samples": [
+            {
+              "VmRSS": 5920
+            },
+            {
+              "VmRSS": 5920
+            },
+            {
+              "VmRSS": 5920
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "after",
+      "round": 4,
+      "sequence": 7
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-provider.BvY403/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3419632,
+        "sha256": "f0340aabea8e928cb71dff2f1128fbedbd09ecbfa0074507e0b8866ab04d08ae"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 19.51195899164304,
+      "control_rpc_per_second": 26240.317551881348,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 4.846000010729767,
+      "session_creation_ms": 71.68679199821781,
+      "workload_ms": 81.45991699711885,
+      "requests_per_second": 392.8312374923216,
+      "prompt_latency_ms": {
+        "p50": 45.105853998393286,
+        "p95": 75.38116700015962
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 4000,
+          "max_kib": 4000,
+          "samples": [
+            {
+              "VmRSS": 4000
+            },
+            {
+              "VmRSS": 4000
+            },
+            {
+              "VmRSS": 4000
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 6144.0,
+          "max_kib": 6176,
+          "samples": [
+            {
+              "VmRSS": 5328
+            },
+            {
+              "VmRSS": 5888
+            },
+            {
+              "VmRSS": 6128
+            },
+            {
+              "VmRSS": 6160
+            },
+            {
+              "VmRSS": 6160
+            },
+            {
+              "VmRSS": 6176
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 6176,
+          "max_kib": 6176,
+          "samples": [
+            {
+              "VmRSS": 6176
+            },
+            {
+              "VmRSS": 6176
+            },
+            {
+              "VmRSS": 6176
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "before",
+      "round": 4,
+      "sequence": 8
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-provider.BvY403/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3419632,
+        "sha256": "f0340aabea8e928cb71dff2f1128fbedbd09ecbfa0074507e0b8866ab04d08ae"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 21.87733299797401,
+      "control_rpc_per_second": 23403.21830121682,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 4.539000001386739,
+      "session_creation_ms": 61.2915000092471,
+      "workload_ms": 94.18395900866017,
+      "requests_per_second": 339.76061674215265,
+      "prompt_latency_ms": {
+        "p50": 48.870270496991,
+        "p95": 90.359666995937
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3968,
+          "max_kib": 3968,
+          "samples": [
+            {
+              "VmRSS": 3968
+            },
+            {
+              "VmRSS": 3968
+            },
+            {
+              "VmRSS": 3968
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 6120.0,
+          "max_kib": 6208,
+          "samples": [
+            {
+              "VmRSS": 5536
+            },
+            {
+              "VmRSS": 5936
+            },
+            {
+              "VmRSS": 6096
+            },
+            {
+              "VmRSS": 6144
+            },
+            {
+              "VmRSS": 6192
+            },
+            {
+              "VmRSS": 6208
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 6208,
+          "max_kib": 6208,
+          "samples": [
+            {
+              "VmRSS": 6208
+            },
+            {
+              "VmRSS": 6208
+            },
+            {
+              "VmRSS": 6208
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "before",
+      "round": 5,
+      "sequence": 9
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-size.28oEyJ/target/release/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3352528,
+        "sha256": "f6f89093cab6db5e276a9b2a1b27e352e54db410ea4720683e58b6efe5c5a30c"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 19.39933300309349,
+      "control_rpc_per_second": 26392.65999085405,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 5.002541991416365,
+      "session_creation_ms": 74.84537499840371,
+      "workload_ms": 77.73725000151899,
+      "requests_per_second": 411.6430668614431,
+      "prompt_latency_ms": {
+        "p50": 38.12506249960279,
+        "p95": 74.4442919967696
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3904,
+          "max_kib": 3904,
+          "samples": [
+            {
+              "VmRSS": 3904
+            },
+            {
+              "VmRSS": 3904
+            },
+            {
+              "VmRSS": 3904
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 5936.0,
+          "max_kib": 5952,
+          "samples": [
+            {
+              "VmRSS": 5360
+            },
+            {
+              "VmRSS": 5776
+            },
+            {
+              "VmRSS": 5920
+            },
+            {
+              "VmRSS": 5952
+            },
+            {
+              "VmRSS": 5952
+            },
+            {
+              "VmRSS": 5952
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 5952,
+          "max_kib": 5952,
+          "samples": [
+            {
+              "VmRSS": 5952
+            },
+            {
+              "VmRSS": 5952
+            },
+            {
+              "VmRSS": 5952
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "after",
+      "round": 5,
+      "sequence": 10
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-size.28oEyJ/target/release/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3352528,
+        "sha256": "f6f89093cab6db5e276a9b2a1b27e352e54db410ea4720683e58b6efe5c5a30c"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 17.00645800156053,
+      "control_rpc_per_second": 30106.210238076517,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 4.698332995758392,
+      "session_creation_ms": 63.783540987060405,
+      "workload_ms": 66.48433399095666,
+      "requests_per_second": 481.3163955940765,
+      "prompt_latency_ms": {
+        "p50": 35.5655624953215,
+        "p95": 62.89229200046975
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3888,
+          "max_kib": 3888,
+          "samples": [
+            {
+              "VmRSS": 3888
+            },
+            {
+              "VmRSS": 3888
+            },
+            {
+              "VmRSS": 3888
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 5904,
+          "max_kib": 5952,
+          "samples": [
+            {
+              "VmRSS": 5520
+            },
+            {
+              "VmRSS": 5808
+            },
+            {
+              "VmRSS": 5904
+            },
+            {
+              "VmRSS": 5952
+            },
+            {
+              "VmRSS": 5952
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 5952,
+          "max_kib": 5952,
+          "samples": [
+            {
+              "VmRSS": 5952
+            },
+            {
+              "VmRSS": 5952
+            },
+            {
+              "VmRSS": 5952
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "after",
+      "round": 6,
+      "sequence": 11
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-provider.BvY403/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3419632,
+        "sha256": "f0340aabea8e928cb71dff2f1128fbedbd09ecbfa0074507e0b8866ab04d08ae"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 16.232166002737358,
+      "control_rpc_per_second": 31542.309258891106,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 4.764124998473562,
+      "session_creation_ms": 63.73804200848099,
+      "workload_ms": 83.40504099032842,
+      "requests_per_second": 383.6698552034846,
+      "prompt_latency_ms": {
+        "p50": 49.71849999856204,
+        "p95": 80.16204199520871
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3984,
+          "max_kib": 3984,
+          "samples": [
+            {
+              "VmRSS": 3984
+            },
+            {
+              "VmRSS": 3984
+            },
+            {
+              "VmRSS": 3984
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 6128.0,
+          "max_kib": 6160,
+          "samples": [
+            {
+              "VmRSS": 5472
+            },
+            {
+              "VmRSS": 5936
+            },
+            {
+              "VmRSS": 6096
+            },
+            {
+              "VmRSS": 6160
+            },
+            {
+              "VmRSS": 6160
+            },
+            {
+              "VmRSS": 6160
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 6160,
+          "max_kib": 6160,
+          "samples": [
+            {
+              "VmRSS": 6160
+            },
+            {
+              "VmRSS": 6160
+            },
+            {
+              "VmRSS": 6160
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "before",
+      "round": 6,
+      "sequence": 12
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-provider.BvY403/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3419632,
+        "sha256": "f0340aabea8e928cb71dff2f1128fbedbd09ecbfa0074507e0b8866ab04d08ae"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 20.6248750037048,
+      "control_rpc_per_second": 24824.392870649182,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 5.013999994844198,
+      "session_creation_ms": 77.30283300043084,
+      "workload_ms": 64.42516700190026,
+      "requests_per_second": 496.7003034552652,
+      "prompt_latency_ms": {
+        "p50": 35.77402099472238,
+        "p95": 60.82808299106546
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3968,
+          "max_kib": 3968,
+          "samples": [
+            {
+              "VmRSS": 3968
+            },
+            {
+              "VmRSS": 3968
+            },
+            {
+              "VmRSS": 3968
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 6016,
+          "max_kib": 6080,
+          "samples": [
+            {
+              "VmRSS": 5504
+            },
+            {
+              "VmRSS": 5856
+            },
+            {
+              "VmRSS": 6016
+            },
+            {
+              "VmRSS": 6048
+            },
+            {
+              "VmRSS": 6080
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 6080,
+          "max_kib": 6080,
+          "samples": [
+            {
+              "VmRSS": 6080
+            },
+            {
+              "VmRSS": 6080
+            },
+            {
+              "VmRSS": 6080
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "before",
+      "round": 7,
+      "sequence": 13
+    },
+    {
+      "binary": {
+        "path": "/private/tmp/piko-size.28oEyJ/target/release/piko",
+        "version": "piko 0.7.1",
+        "bytes": 3352528,
+        "sha256": "f6f89093cab6db5e276a9b2a1b27e352e54db410ea4720683e58b6efe5c5a30c"
+      },
+      "control_rpc_count": 512,
+      "control_rpc_batch_size": 16,
+      "control_rpc_ms": 18.396625004243106,
+      "control_rpc_per_second": 27831.1918562187,
+      "sessions": 32,
+      "configured_model_concurrency": 8,
+      "configured_active_root_turns": 8,
+      "peak_simultaneous_mock_requests": 8,
+      "completed_prompts": 32,
+      "provider_requests": 32,
+      "model_catalog_requests": 1,
+      "fixture_connections": 8,
+      "simulated_model_delay_ms": 2.0,
+      "startup_and_initialize_ms": 5.2380419947439805,
+      "session_creation_ms": 76.15304199862294,
+      "workload_ms": 69.57562500610948,
+      "requests_per_second": 459.93118994173693,
+      "prompt_latency_ms": {
+        "p50": 38.70658349478617,
+        "p95": 66.47804200474638
+      },
+      "rss_kib": {
+        "idle": {
+          "median_kib": 3920,
+          "max_kib": 3920,
+          "samples": [
+            {
+              "VmRSS": 3920
+            },
+            {
+              "VmRSS": 3920
+            },
+            {
+              "VmRSS": 3920
+            }
+          ]
+        },
+        "workload": {
+          "median_kib": 5920,
+          "max_kib": 5936,
+          "samples": [
+            {
+              "VmRSS": 5248
+            },
+            {
+              "VmRSS": 5856
+            },
+            {
+              "VmRSS": 5920
+            },
+            {
+              "VmRSS": 5920
+            },
+            {
+              "VmRSS": 5936
+            }
+          ]
+        },
+        "after_completed": {
+          "median_kib": 5936,
+          "max_kib": 5936,
+          "samples": [
+            {
+              "VmRSS": 5936
+            },
+            {
+              "VmRSS": 5936
+            },
+            {
+              "VmRSS": 5936
+            }
+          ]
+        }
+      },
+      "checks": {
+        "all_prompts_completed": true,
+        "request_and_output_isolation": true,
+        "no_automatic_provider_retries": true,
+        "model_concurrency_bounded": true,
+        "no_host_tool_permissions": true,
+        "control_rpc_preserves_sessions": true,
+        "control_rpc_has_no_model_work_or_host_tools": true
+      },
+      "variant": "after",
+      "round": 7,
+      "sequence": 14
+    }
+  ],
+  "implementation": {
+    "baselineSourceCommit": "e584e13b56a6f8730a3da7e200fba98726f17e36",
+    "candidateBasedOn": "CLI entry-point deduplication, parse-only TOML and compact release dependency logging; no extra LLVM flags",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "candidateFiles": {
+      "Cargo.toml": "2d19b9bc85f87cba5426ed6ff6f3ec15506fe12bc6b2dfac87863d478c06098c",
+      "Cargo.lock": "4b15ced5b5a73a6bbb0c22cdd32a5111c3a67bbea83fdb200191943f2b5c5e86",
+      "src/agent.rs": "8e15c8df08d1e57ed2cf2d6077160c4f3e664a21487ebf476127937f48d6503e",
+      "src/agents.rs": "b5a2c611d5d038c8c6cc0f7527034ca72a1e452e81c47987cac162869b8ea90f",
+      "src/auth.rs": "f264df1c3777b10f9109ac6fdb99e38b58d9d797c9f8277b0ab3cd5ca1de33f5",
+      "src/browser.rs": "f84d2bae04fc580539514a3f002138194de91641aedf4259fe44cf7d57739526",
+      "src/cli.rs": "cc24c227abe8931a3aef806f12d813fc8f6ddcc0a29f89efa35e28300686b503",
+      "src/computer.rs": "655a6c8e635ea5cd5710d71f25b1eb78b168b9b09596691d0978b0ef85a4b97c",
+      "src/config.rs": "0182db3f3b466ee2fabca85dda136d9892268854135d81ef0b8ad3a8749bafb6",
+      "src/image.rs": "dd726e2b27bf8878d798cf7edcbca2bde3a80669725a946109b1c59bd36a5401",
+      "src/jobs.rs": "366666330ae85f4b1cef22ce190db45a39b3af888112fffaa066bd65bf6f0741",
+      "src/lib.rs": "9e442b5bff3e8ca801b665794fb53a27b4ed2dccb914bfb9990e81ba31ad1192",
+      "src/main.rs": "a327655f36bc3c323f52c3dbc47452d6192b802a4ae61ff98e56313b43a0568a",
+      "src/mcp.rs": "5414f21c5e5928025292341dfe38d591abab5cdb4a38d1493b6218eb5865725f",
+      "src/metrics.rs": "466275b2d2091e32d07bbecd3c2c23073736f520d9d3bde0800de8c6c7ee09db",
+      "src/models.rs": "c2b7ae22d3f108cc7c51d99311a62b4d23bec43a71b85ab930d6128fd12e2e8c",
+      "src/multimodal.rs": "7dfc6d0c7cbc5303062c907e407fa18b8d8dd891d23aadbbd9b076bf5ec5c522",
+      "src/patch.rs": "4625faff45c8654f4e1b16b9a7f9cab6a7dda82b73796607f6d947b1aea45579",
+      "src/protocol.rs": "99d82dbe431d3b93f2e7497b780634fa3ffa6c842f4e72f95bd58fba3b54076c",
+      "src/provider.rs": "052547cea6d4445a49f9a7def1d59c1f16e3f6ee405873195d3112231645c946",
+      "src/provider_options.rs": "859c8f7aab2c1079396d67838d3def297cf9aa670707350f0a4cbc4dff9d8554",
+      "src/retry.rs": "3646c53de31e711931580931d4a46fcc9e21bfbdd654ad5c03c75f70ea4bd395",
+      "src/search.rs": "cb772e98a93b21512d2176b4744bfdc5852248485057d12369f6acecbbea6f3b",
+      "src/session.rs": "87e71fd07c667eaeb4b8a2a04b901af78537ed9de5b71bdc087425d2e68f79a0",
+      "src/terminal.rs": "c427b0734ff97e824e91470e9ce5a5b9b1ba58b19d37fd7656d727f3c1492005",
+      "src/tools.rs": "57da51a52ec8714f1f5692afd2b7255db6a2a8229005a2d1dd48e1cda39e6541",
+      "src/web.rs": "d5624b4e0955b78bcdf8355c2f9c6ed454201a0367327b916f4a91636531e0d8",
+      "src/workspace.rs": "3112ba8e081001a9129f114e0df18f541980efd48fab9460a4e16e6242ac6982"
+    }
+  },
+  "interpretation": "Local warm-cache timings are noisy and vary across repeated experiments; no universal speedup is claimed. All raw samples and paired changes are retained. Clean-runner comparisons are also required."
+}

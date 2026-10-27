@@ -3,6 +3,64 @@
 Piko 0.5 keeps the native ACP runtime and its existing tools. No new runtime
 libraries, framework, background service or model download is required.
 
+## Bounded agent pools
+
+ACP dispatch moves request parameters into handlers rather than retaining a
+second prompt-sized JSON tree. Top-level admission happens before context
+projection and tool preparation. Model concurrency remains independent of
+parent lifetimes, so nested delegation works even with one active root turn.
+Queued/executing prompt frames also share an encoded-byte budget; overload
+is rejected while cancellation and permission replies remain readable.
+This follows Tokio's [bounded-queue and backpressure guidance](https://tokio.rs/tokio/tutorial/channels#backpressure-and-bounded-channels).
+
+Idle transcripts above a configurable residency threshold release their trees
+after a durable save. They reload before constructing the next model window;
+saving a cold transcript is rejected so metadata changes cannot overwrite
+history with an empty list. A history lease also releases reloaded trees on
+preparation errors. Recent completed child contexts use compact JSON with a
+per-session aggregate FIFO budget; expiry preserves independently retained
+job results and gives explicit followup guidance.
+
+Provider/auth clones share immutable configuration through `Arc`, as tool schemas
+and HTTP pools already do. Tool batches validate completely, then retain indices
+into their saved transcript rather than cloning function arguments. Output order,
+approval checks, checkpoint boundaries and image trimming remain unchanged.
+No dependencies, model runtimes or background daemons are added.
+
+The next development pass borrows the model's saved prefix and owns only current
+work. Omission notices remain model-only. Image trimming copies an older output
+only when replacing one of its images, preserving original durable exchanges.
+Saved turns use shared immutable storage, so a save snapshot clones metadata and
+references rather than full transcripts. Blocking workers serialize into capped
+64 KiB file buffers and parse bounded files; permits remain with workers even
+when their caller stops waiting. Separate admission covers the complete load and
+picker-update lifecycle so decoded histories do not accumulate behind saves.
+Transcripts up to 256 KiB use bounded inline parsing after the file read, keeping
+small Value trees on the event-loop allocator. Larger files use the buffered
+worker parser; small-file growth falls back to that capped path.
+Small saves also encode within a 256 KiB cap and write those bytes directly,
+while large saves use the streamed writer. A threshold overflow selects the
+streamed path; actual serializer and persistence-limit failures stay failures.
+
+ACP stdio uses compact frames under a 4 MiB encoded-byte queue budget, with one
+oversized valid frame allowed exclusively. Ready bursts share a flush; waiting
+for the next frame adds no timer delay. In-process clients retain the structured
+channel API. Pending permission registrations have drop guards, including when
+cancellation interrupts a blocked send. Tokio documents why buffered output
+must be [explicitly flushed](https://docs.rs/tokio/latest/tokio/io/struct.BufWriter.html).
+
+Job retirement events replace repeated full-mailbox scans. Generation-tagged
+completion queues make history removal constant-time between bounded compactions.
+Shell and terminal startup share a global process budget; live processes and I/O
+workers own its permits until cleanup, independently of retained task results.
+This bounds terminal worker stacks across sessions as well as process count.
+The terminal rejects an already unavailable working directory before invoking
+portable-pty, whose default behavior would substitute the home directory.
+
+Scale fixtures collect Windows working-set counters through the system
+[GetProcessMemoryInfo API](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo),
+alongside macOS RSS and Linux `/proc` counters. No monitoring package is installed.
+
 ## Research and choices
 
 The review used primary implementations and protocol documentation:
