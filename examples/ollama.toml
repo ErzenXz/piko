@@ -4,3 +4,5 @@ base_url = "http://127.0.0.1:11434/v1"
 model = "qwen3-coder"
 max_model_requests = 2
 # Install/pull an appropriate local tool-capable model separately.
+# Set OLLAMA_KEEP_ALIVE on the Ollama server to tune warm residency vs RAM.
+# keep_alive is not a documented /v1 request parameter.

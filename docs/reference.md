@@ -381,22 +381,87 @@ overhead. External models and browsers have their own resource costs.
 
 ### Cache reuse, measured honestly
 
-Stable instruction/tool ordering, append-only exchanges, stable per-session OpenAI
-`prompt_cache_key`, and ordered tool results preserve reusable prompt prefixes.
-No changing timestamps, fake padding, or redundant model-side summaries are added.
-Optional `prompt_cache_retention = "24h"` is sent only to the OpenAI API (not
-ChatGPT/custom endpoints); enable it only for models that support it. Newer model
-families can use different caching controls; unsupported settings may be rejected.
+Stable instructions, tool order, append-only exchanges and ordered tool results
+preserve reusable prefixes. OpenAI keys remain stable per session; child agents
+use separate stable keys. Piko never caches generated answers as fresh responses,
+pads prompts, prewarms models, or promises a cache-hit percentage.
 
-`_harness/usage` reports provider-reported input, output, cached input tokens, and
-**cached-input / total-input token ratio**. `_harness/stats` aggregates only
-responses with cache details; absent details are unknown (`null`), not invented
-hits or zeroes. Chat Completions requests ask for streamed usage. This is a token
-ratio, not the percentage of requests hitting a cache.
+For the official OpenAI API, GPT-5.6 and later use
+`prompt_cache_options = {mode: "implicit", ttl: "30m"}` on the wire. This keeps
+upstream automatic caching enabled; short or changed prefixes may have no hits.
+For Responses, optionally set `prompt_cache_ttl = "12h"` in Piko's TOML config.
+Chat Completions supports only `"30m"`. Earlier model families use optional
+`prompt_cache_retention = "in_memory"` or `"24h"`; the older Piko spelling
+`"in-memory"` is accepted and normalized. GPT-5.5 supports only `"24h"`.
+Using a legacy lifetime with a modern model fails clearly before the request.
+Subscription sign-in leaves cache lifetime to its backend.
 
-OpenAI caching requires repeated eligible prefixes; short prompts, changed tools,
-context eviction, cache expiry, and heavy routing traffic reduce reuse. A 99%
-hit rate cannot be guaranteed by a harness. See [OpenAI's caching guide](https://platform.openai.com/docs/guides/prompt-caching).
+Longer retention can cost more for cache writes. Cache reads and writes are
+separate counters; increasing retention or concurrency does not guarantee savings.
+Keep the automatic defaults until your workload's reported usage supports a
+change. [OpenAI cache semantics and lifetime pricing](https://developers.openai.com/api/docs/guides/prompt-caching).
+
+OpenRouter automatically receives a stable `x-session-id` for best-effort sticky
+routing. Anthropic models, including `~anthropic/` aliases, also receive the
+provider's automatic `cache_control: {type: "ephemeral"}` option. Set
+`openrouter_prompt_cache = false` to omit that option; existing automatic provider
+caching can still apply. [OpenRouter caching and routing](https://openrouter.ai/docs/guides/best-practices/prompt-caching).
+
+Only exact official endpoints are recognized automatically. For an explicitly
+trusted proxy, `provider_profile = "openai"` or `"openrouter"` opts into those
+wire fields. The default `"auto"` leaves other compatible endpoints conservative;
+`"compatible"` explicitly disables automatic provider detection. This setting
+changes wire options, never authentication or where credentials may be sent.
+Unsupported explicit lifetime/tier settings fail rather than being silently lost.
+
+`_harness/usage` includes input, output, cached-input and cache-write token counts,
+plus the returned `serviceTier` when supplied. `_harness/stats` exposes
+`totalInputTokens`, `totalOutputTokens`, `responsesWithUsage` and
+`cacheDetailsCoverage` for all recognized usage. `inputTokenCacheHitRate` is a
+token-weighted ratio over responses with known cache reads; missing details remain
+`null`. Compatibility aliases `inputTokens`/`outputTokens` in the aggregate cover
+only those known-cache responses; use `total*` for complete observed totals.
+Writes never count as hits. Counters normalize OpenAI/OpenRouter, DeepSeek, and
+Anthropic/Gemini metadata shapes; this does not add their native wire protocols.
+No dollar cost is guessed from token counts.
+
+### Fast processing and recovery
+
+Set `service_tier = "fast"` in your external Piko config to request OpenAI Fast
+processing. `"priority"` is its API alias; subscription Fast is normalized to
+`"priority"` on the wire. API-key requests also accept `"auto"`, `"default"`,
+`"flex"` and `"ultrafast"`; Ultrafast requires Responses and an eligible model
+and account. Omit the setting to use the provider's account/project default.
+Fast and Ultrafast are **opt-in** and can change cost or plan usage. A request is
+not a guarantee: Piko reports the tier actually returned by the provider.
+It does not silently switch models or remove a rejected service tier.
+Subscription backend options beyond the documented Codex mapping have not been
+live-validated. [Fast](https://developers.openai.com/api/docs/guides/fast-mode),
+[Ultrafast](https://developers.openai.com/api/docs/guides/ultrafast-mode),
+[Codex tier mapping](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+One total deadline covers queueing, authentication, backoff and streaming.
+Transient HTTP failures before streaming receive at most three jittered retries;
+`retry-after-ms`, fractional `Retry-After` and HTTP dates are honored. Delays over
+30 seconds or outside the remaining deadline return a retry-later error, without
+retrying early. Billing/spend-cap errors and `x-should-retry: false` stop immediately.
+Error envelopes are limited to 8 KiB and their arbitrary messages are not echoed.
+Connection and timeout errors may retry; ambiguous request failures do not.
+
+Streams and completed tools are never automatically replayed. Chat-compatible
+providers may end cleanly after a valid finish marker without `[DONE]`; missing,
+contradictory or trailing choice data fails before tool execution. Every call's
+JSON arguments are validated before executing any call in its batch.
+[HTTP retry semantics](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after),
+[OpenAI errors](https://developers.openai.com/api/docs/guides/error-codes),
+[Claude overload/spend-cap errors](https://platform.claude.com/docs/en/api/errors).
+
+For Ollama's compatible `/v1` endpoints, configure model residency with the
+**server's** `OLLAMA_KEEP_ALIVE`; Piko does not inject the native-only `keep_alive`
+field. Longer residency improves warm latency but retains model memory. Keep
+parallel requests modest because their context memory grows with concurrency.
+[Ollama compatibility](https://docs.ollama.com/api/openai-compatibility),
+[Ollama memory settings](https://docs.ollama.com/faq).
 
 ## MCP servers
 

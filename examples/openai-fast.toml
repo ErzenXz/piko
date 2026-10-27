@@ -1,0 +1,11 @@
+# Supply OPENAI_API_KEY in the launcher environment. Keep this config outside the workspace.
+auth = "api_key"
+wire_api = "responses"
+model = "gpt-6-luna"
+reasoning_effort = "low"
+service_tier = "fast"  # opt-in: premium processing; depends on account/model access
+max_model_requests = 10
+max_subagents = 10
+# Automatic implicit caching uses 30m for GPT-5.6+.
+# prompt_cache_ttl = "12h"  # opt-in: longer cache writes can cost more
+# For Ultrafast, select an eligible model such as gpt-6.1-sol and account first.

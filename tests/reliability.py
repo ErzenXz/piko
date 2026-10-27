@@ -277,7 +277,7 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_transient_pre_stream_retries_reuse_body_and_do_not_repeat_tools(self):
         write = response([call("write_file", {"path": "retry.txt", "content": "once"}, "retry-write")])
-        actions = ["disconnect", (429, {"Retry-After": "0"}, "busy"), (200, {}, write),
+        actions = [(503, {"Retry-After": "0"}, "busy"), (429, {"Retry-After": "0"}, "busy"), (200, {}, write),
                    (503, {"Retry-After": "0"}, "busy"), (200, {}, final())]
         async with ScriptedHarness(actions) as h:
             await h.initialize()

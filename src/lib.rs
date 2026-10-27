@@ -13,6 +13,8 @@ pub mod multimodal;
 pub mod patch;
 pub mod protocol;
 pub mod provider;
+mod provider_options;
+mod retry;
 pub mod search;
 pub mod session;
 pub mod terminal;

@@ -11,6 +11,10 @@ pub struct Config {
     pub model: String,
     pub base_url: String,
     pub reasoning_effort: Option<String>,
+    pub provider_profile: String,
+    pub service_tier: Option<String>,
+    pub prompt_cache_ttl: Option<String>,
+    pub openrouter_prompt_cache: bool,
     pub prompt_cache_retention: Option<String>,
     pub state_dir: PathBuf,
     pub max_turn_steps: usize,
@@ -49,6 +53,10 @@ impl Default for Config {
             model: "gpt-6-luna".into(),
             base_url: "https://api.openai.com/v1".into(),
             reasoning_effort: None,
+            provider_profile: "auto".into(),
+            service_tier: None,
+            prompt_cache_ttl: None,
+            openrouter_prompt_cache: true,
             prompt_cache_retention: None,
             state_dir: default_state_dir(),
             max_turn_steps: 80,
@@ -150,10 +158,40 @@ impl Config {
         );
         if let Some(retention) = &self.prompt_cache_retention {
             ensure!(
-                ["in-memory", "24h"].contains(&retention.as_str()),
-                "prompt_cache_retention must be in-memory or 24h (only for supported OpenAI models)"
+                ["in_memory", "in-memory", "24h"].contains(&retention.as_str()),
+                "prompt_cache_retention must be in_memory or 24h (legacy OpenAI models only)"
             );
         }
+        ensure!(
+            ["auto", "openai", "openrouter", "compatible"]
+                .contains(&self.provider_profile.as_str()),
+            "provider_profile must be auto, openai, openrouter, or compatible"
+        );
+        if let Some(tier) = &self.service_tier {
+            ensure!(
+                ["auto", "default", "fast", "priority", "flex", "ultrafast"]
+                    .contains(&tier.as_str()),
+                "Invalid service_tier: expected auto, default, fast, priority, flex, or ultrafast"
+            );
+            ensure!(
+                tier != "ultrafast" || self.wire_api == "responses",
+                "Ultrafast mode requires Responses"
+            );
+        }
+        if let Some(ttl) = &self.prompt_cache_ttl {
+            ensure!(
+                ["30m", "12h"].contains(&ttl.as_str()),
+                "prompt_cache_ttl must be 30m or 12h"
+            );
+            ensure!(
+                ttl != "12h" || self.wire_api == "responses",
+                "12h prompt caching requires Responses"
+            );
+        }
+        ensure!(
+            self.prompt_cache_ttl.is_none() || self.prompt_cache_retention.is_none(),
+            "Choose prompt_cache_ttl or legacy prompt_cache_retention, not both"
+        );
         ensure!(
             ["auto", "chatgpt", "api_key", "none"].contains(&self.auth.as_str()),
             "auth must be auto, chatgpt, api_key, or none"

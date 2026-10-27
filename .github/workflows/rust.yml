@@ -78,6 +78,7 @@ jobs:
           PIKO_NATIVE_DESKTOP_TEST: '1'
         run: python tests/computer_native.py
       - run: python tests/reliability.py
+      - run: python tests/providers.py
       - run: python tests/tools.py
       - name: Verify bounded session and subagent pools
         run: |

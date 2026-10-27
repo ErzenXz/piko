@@ -4,3 +4,5 @@ base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 model = "openai/gpt-6-luna"
 reasoning_effort = "none"
+# Stable session affinity is automatic. Anthropic models also use ephemeral caching.
+# openrouter_prompt_cache = false  # omit Anthropic's automatic cache_control

@@ -339,6 +339,18 @@ fn validate_calls<'a>(calls: impl IntoIterator<Item = &'a Value>) -> Result<()> 
                 && !name.chars().any(char::is_control)),
             "Tool call missing name"
         );
+        let arguments = call["arguments"]
+            .as_str()
+            .context("Tool call missing arguments")?;
+        ensure!(
+            arguments.len() <= 256 * 1024,
+            "Tool arguments exceed size limit"
+        );
+        // Drop each validated tree before checking the next call. This matches
+        // the executor's JSON depth/number checks without retaining a batch copy.
+        let parsed: Value =
+            serde_json::from_str(arguments).context("Invalid tool arguments JSON")?;
+        ensure!(parsed.is_object(), "Tool arguments must be a JSON object");
     }
     Ok(())
 }
@@ -423,7 +435,7 @@ mod tests {
 
     #[test]
     fn invalid_tool_batch_is_rejected_before_execution() {
-        let valid = json!({"type":"function_call","call_id":"write-1","name":"write_file"});
+        let valid = json!({"type":"function_call","call_id":"write-1","name":"write_file","arguments":"{}"});
         assert!(validate_calls(&[valid.clone(), valid.clone()]).is_err());
         for id in [
             Value::Null,
@@ -435,7 +447,22 @@ mod tests {
         ] {
             assert!(validate_calls(&[valid.clone(), json!({"call_id":id})]).is_err());
         }
-        assert!(validate_calls(&[valid, json!({"call_id":"read-2","name":"read_file"})]).is_ok());
+        for arguments in ["{", "[]", "null", "\"text\""] {
+            assert!(
+                validate_calls(&[
+                    valid.clone(),
+                    json!({"call_id":"read-2","name":"read_file","arguments":arguments})
+                ])
+                .is_err()
+            );
+        }
+        assert!(
+            validate_calls(&[
+                valid,
+                json!({"call_id":"read-2","name":"read_file","arguments":"{}"})
+            ])
+            .is_ok()
+        );
         assert!(validate_calls(&[json!({"call_id":"missing-name"})]).is_err());
         assert!(validate_calls(&[]).is_ok());
         let excessive: Vec<_> = (0..33)

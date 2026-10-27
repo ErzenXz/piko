@@ -66,7 +66,12 @@ runtime, bounded active turns, disk-backed idle history and compact subagent
 contexts. [Scale tests and limits →](docs/performance.md)
 
 File/search tools, exact patches, image viewing, interactive terminals, subagents
-with messaging, MCP and recoverable sessions are built in. Approved web fetching
+with messaging, MCP and recoverable sessions are built in. Stable prompt prefixes,
+provider-aware caching and bounded retries keep repeated work efficient. OpenAI
+Fast/Ultrafast are opt-in; cache reads, writes and actual service tiers are reported.
+[Provider options and cache metrics →](docs/reference.md#cache-reuse-measured-honestly)
+
+Approved web fetching
 and optional web search/browser automation expand what the agent can verify.
 [Tool setup →](https://github.com/ErzenXz/piko/blob/main/docs/reference.md#web-browser-images-and-interactive-tools)
 [Design and recovery →](https://github.com/ErzenXz/piko/blob/main/docs/design.md)
