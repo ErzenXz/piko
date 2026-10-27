@@ -183,10 +183,7 @@ impl Provider {
         );
         let options = profile.options(&self.config, model)?;
         // Preserve the established namespace; children get their own stable routing key.
-        let affinity = match agent_id {
-            Some(agent) => format!("harness-v1:{session_id}:{agent}"),
-            None => format!("harness-v1:{session_id}"),
-        };
+        let affinity = format!("harness-v1:{}", agent_id.unwrap_or(session_id));
         let cache_key =
             matches!(profile, Profile::OpenAi | Profile::Subscription).then_some(affinity.as_str());
         let fallback_tools;

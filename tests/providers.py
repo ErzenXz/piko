@@ -32,6 +32,23 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             usage = [u['params']['usage'] for u in h.updates if u.get('method') == '_harness/usage']
             self.assertEqual(usage[-1]['serviceTier'], 'default', 'Report actual tier, not requested Fast')
 
+    async def test_child_cache_key_is_compact_distinct_and_inherits_fast(self):
+        async def model(body):
+            if body['input'][-1].get('type') == 'function_call_output':
+                return final()
+            if body['input'][0].get('content', '').strip() == 'root':
+                return response([call('spawn_agent', {'prompt': 'child', 'role': 'explore', 'background': False})])
+            return final()
+        async with Harness(model, extra='provider_profile = "openai"\nservice_tier = "fast"\n') as h:
+            await h.initialize()
+            self.assertNotIn('error', await h.prompt(await h.session(), 'root'))
+            self.assertEqual(len(h.requests), 3)
+            keys = [body['prompt_cache_key'] for body in h.requests]
+            self.assertEqual(keys[0], keys[2])
+            self.assertNotEqual(keys[0], keys[1])
+            self.assertTrue(all(len(key) <= 64 for key in keys))
+            self.assertTrue(all(body['service_tier'] == 'fast' for body in h.requests))
+
     async def test_legacy_cache_retention_is_normalized(self):
         async with Harness(lambda_body, extra='provider_profile = "openai"\nmodel = "gpt-5.4"\nprompt_cache_retention = "in-memory"\n') as h:
             await h.initialize()
