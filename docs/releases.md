@@ -10,17 +10,24 @@ ranks above unapproved automated publishing. Approved releases starting with
 2. The Release workflow tests six native targets and stages all seven tarballs
    with provenance. Its `staged-release` artifact preserves exact payloads and
    `piko-staged.json`: source commit, names, versions, stage IDs and SHA-512 hashes.
-3. Review the successful run and receipt. Sign in with `pnpm login` if needed,
-   inspect pending packages with `pnpm stage list`, and approve the receipt's
-   seven stage IDs together:
+3. Review the successful run and receipt. With a passkey, open
+   [npm's staged packages queue](https://www.npmjs.com/settings/erzenx/staged-packages)
+   and approve all six native packages, then the launcher. npm may require a
+   separate passkey verification per package. Match names, versions and hashes
+   with the receipt; only a maintainer performs this step.
+
+   The CLI also accepts the receipt's seven IDs together:
 
    ```sh
    pnpm stage approve ID1 ID2 ID3 ID4 ID5 ID6 ID7 --registry=https://registry.npmjs.org/
    ```
 
-   npm requires a maintainer's passkey/2FA after malware scanning completes.
-   Confirm every package and version. pnpm orders dependencies so native
-   packages publish before the launcher. CI cannot supply proof of presence.
+   Sign in with `pnpm login` first if needed. With passkey-only authentication,
+   the CLI may approve the first package and then ask for an authenticator OTP;
+   finish the remaining approvals in the browser rather than guessing a code.
+   CLI dependency ordering publishes native packages before the launcher.
+   Approval becomes available after malware scanning completes. CI cannot
+   supply a maintainer's proof of presence.
 4. Run Release on the same tag with `phase=finalize` and `staged_run_id` set to
    the successful staging run. It downloads the original artifacts without
    rebuilding, checks public approval/provenance/integrity, publishes checksummed
@@ -37,6 +44,8 @@ means the outcome is unknown: reconcile using authenticated `pnpm stage list`,
 `view` and `download`, comparing downloaded integrity before recovering its ID.
 Never blindly upload again or delete an npm version. Rejected stages need a
 fresh version. npm visibility may lag approval; wait instead of republishing.
+For a partially approved batch, continue approving the remaining staged IDs;
+already published versions must not be staged again.
 
 Finalization accepts only a successful staging run for the same source commit,
 workflow and tag. It refuses absent approval, hash or provenance mismatches,
